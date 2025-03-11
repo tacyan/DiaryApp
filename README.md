@@ -41,7 +41,7 @@ pip install PyQt5
 3. リポジトリをクローンまたはダウンロードします：
 
 ```
-git clone https://github.com/yourusername/diary-app.git
+git clone https://github.com/tacyan/DiaryApp.git
 cd diary-app
 ```
 
