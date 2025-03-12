@@ -502,12 +502,22 @@ class DiaryApp(QMainWindow):
             else:
                 self.entry_count_label.setVisible(False)
     
-    def date_selected(self, date):
+    def date_selected(self, date=None):
         """
         カレンダーで日付が選択された時に呼ばれるメソッド
         選択された日付の日記があれば読み込む
+        
+        Args:
+            date (QDate, optional): 選択された日付。Noneの場合は現在選択されている日付を使用
         """
+        # 引数がない場合は現在選択されている日付を使用
+        if date is None:
+            date = self.calendar.selectedDate()
+            
         self.selected_date = date
+        
+        # 日付ラベルを更新
+        self.update_date_label()
         
         # 選択された日付の日記ファイルをチェック
         date_str = date.toString('yyyy-MM-dd')
@@ -569,12 +579,16 @@ class DiaryApp(QMainWindow):
                 open_button.clicked.connect(lambda: self.load_entry(diary_list.currentItem().data(Qt.UserRole)) if diary_list.currentItem() else dialog.reject())
                 new_button.clicked.connect(lambda: self.new_entry_with_date(date, dialog))
                 cancel_button.clicked.connect(dialog.reject)
-                diary_list.itemDoubleClicked.connect(lambda item: self.load_entry(item.data(Qt.UserRole)) and dialog.accept())
                 
+                # ダイアログを表示
                 dialog.exec_()
         else:
-            # 日記が存在しない場合は新しい日記を作成
-            self.new_entry()
+            # 日記がない場合は、エディタをクリアして新規入力できる状態にする
+            self.title_edit.clear()
+            self.text_edit.clear()
+            self.tag_edit.clear()
+            self.mood_combo.setCurrentIndex(0)
+            self.statusBar().showMessage(f"{date.toString('yyyy年MM月dd日')}の日記はありません。新規作成できます。", 3000)
     
     def load_entry(self, file_path=None):
         """
