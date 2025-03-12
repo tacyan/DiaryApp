@@ -26,7 +26,6 @@ class CustomTextEdit(QTextEdit):
         """
         if event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
             cursor = self.textCursor()
-            current_format = cursor.charFormat()
             
             # 親クラスのイベント処理を呼び出し（改行を実行）
             super().keyPressEvent(event)
@@ -39,6 +38,7 @@ class CustomTextEdit(QTextEdit):
                 normal_format.setFontWeight(QFont.Normal)  # 通常の太さに戻す
                 cursor.setCharFormat(normal_format)
                 self.heading_applied = False  # フラグをリセット
+                self.setTextCursor(cursor)  # カーソル位置を更新
         else:
             # その他のキーイベントは通常通り処理
             super().keyPressEvent(event)
@@ -1140,15 +1140,7 @@ class DiaryApp(QMainWindow):
         Args:
             level (int): 見出しレベル（1=H1, 2=H2, 3=H3）
         """
-        cursor = self.text_edit.textCursor()
-        
-        # 選択範囲がない場合は、現在の行を選択
-        if not cursor.hasSelection():
-            cursor.movePosition(QTextCursor.StartOfBlock)
-            cursor.movePosition(QTextCursor.EndOfBlock, QTextCursor.KeepAnchor)
-            self.text_edit.setTextCursor(cursor)
-        
-        # 見出しを適用
+        # 見出しを適用（選択範囲の確認はapply_headingメソッド内で行う）
         self.apply_heading(level)
     
     def apply_heading_from_combo(self, index):
@@ -1180,11 +1172,15 @@ class DiaryApp(QMainWindow):
     def apply_normal_text(self):
         """
         選択したテキストに通常のスタイルを適用する
+        選択範囲がない場合は、現在の行を選択
         """
         cursor = self.text_edit.textCursor()
         
+        # 選択範囲がない場合は、現在の行を選択
         if not cursor.hasSelection():
-            return
+            cursor.movePosition(QTextCursor.StartOfBlock)
+            cursor.movePosition(QTextCursor.EndOfBlock, QTextCursor.KeepAnchor)
+            self.text_edit.setTextCursor(cursor)
         
         # 通常のテキスト書式
         char_format = QTextCharFormat()
@@ -1211,14 +1207,19 @@ class DiaryApp(QMainWindow):
     def apply_heading(self, level):
         """
         選択したテキストに見出しスタイルを適用する
+        選択範囲がない場合は、現在の行を選択
         
         Args:
             level (int): 見出しレベル（1=H1, 2=H2, 3=H3）
         """
         cursor = self.text_edit.textCursor()
         
+        # 選択範囲がない場合は、現在の行を選択
         if not cursor.hasSelection():
-            return
+            cursor.movePosition(QTextCursor.StartOfBlock)
+            cursor.movePosition(QTextCursor.EndOfBlock, QTextCursor.KeepAnchor)
+            self.text_edit.setTextCursor(cursor)
+            cursor = self.text_edit.textCursor()  # 更新したカーソルを取得
         
         # 文字書式を作成
         char_format = QTextCharFormat()
