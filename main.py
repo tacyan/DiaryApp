@@ -2,15 +2,101 @@ import sys
 import os
 import json
 import datetime
+import re
 import calendar
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                             QTextEdit, QPushButton, QLabel, QCalendarWidget, QComboBox, 
                             QLineEdit, QMessageBox, QTabWidget, QGridLayout, QListWidget,
                             QListWidgetItem, QFileDialog, QColorDialog, QFontDialog, QMenu,
                             QAction, QToolBar, QStatusBar, QSplitter, QDialog, QCheckBox)
-from PyQt5.QtGui import QFont, QIcon, QTextCharFormat, QColor, QTextCursor, QTextListFormat, QTextBlockFormat, QImage, QTextImageFormat
+from PyQt5.QtGui import QFont, QIcon, QTextCharFormat, QColor, QTextCursor, QTextListFormat, QTextBlockFormat, QImage, QTextImageFormat, QPen
 from PyQt5.QtCore import Qt, QDate, QTimer, QSize, QUrl
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
+
+class CustomCalendar(QCalendarWidget):
+    """
+    カスタムカレンダーウィジェット
+    日記のある日付とお気に入りの日付を視覚的に表示する
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent = parent
+        self.setGridVisible(True)
+        self.setVerticalHeaderFormat(QCalendarWidget.NoVerticalHeader)
+        self.setHorizontalHeaderFormat(QCalendarWidget.SingleLetterDayNames)
+        
+        # 日記のある日付のリスト
+        self.diary_dates = []
+        
+        # お気に入りの日付のリスト
+        self.favorite_dates = []
+        
+    def updateCells(self):
+        """
+        カレンダーのセルを更新する
+        """
+        # 日記のある日付を取得
+        self.diary_dates = []
+        self.favorite_dates = []
+        
+        # 親ウィンドウからメタデータを取得
+        if hasattr(self.parent, 'metadata') and hasattr(self.parent, 'diary_folder'):
+            # 日記ファイルから日付を抽出
+            for file_name in os.listdir(self.parent.diary_folder):
+                if file_name.endswith('.json') and file_name != "metadata.json":
+                    try:
+                        # ファイル名から日付部分を抽出（yyyy-MM-dd_title-slug.json）
+                        date_part = file_name.split('_')[0]
+                        date = QDate.fromString(date_part, 'yyyy-MM-dd')
+                        if date.isValid():
+                            if date not in self.diary_dates:
+                                self.diary_dates.append(date)
+                            
+                            # お気に入りかどうかチェック
+                            file_key = file_name[:-5]  # .jsonを除去
+                            if file_key in self.parent.metadata["favorites"] and date not in self.favorite_dates:
+                                self.favorite_dates.append(date)
+                    except:
+                        continue
+        
+        super().updateCells()
+    
+    def paintCell(self, painter, rect, date):
+        """
+        カレンダーのセルを描画する
+        """
+        # デフォルトのセル描画
+        super().paintCell(painter, rect, date)
+        
+        # 今日の日付の場合は特別な色で囲む
+        if date == QDate.currentDate():
+            painter.setPen(QPen(QColor(255, 0, 0), 2))
+            painter.drawRect(rect.adjusted(1, 1, -1, -1))
+        
+        # 日記がある日付の場合は背景色を変える
+        if date in self.diary_dates:
+            # 日記の数を数える
+            diary_count = 0
+            date_str = date.toString('yyyy-MM-dd')
+            
+            for file_name in os.listdir(self.parent.diary_folder):
+                if file_name.startswith(date_str) and file_name.endswith('.json') and file_name != "metadata.json":
+                    diary_count += 1
+            
+            # 背景色を設定
+            if date in self.favorite_dates:
+                # お気に入りがある日付
+                painter.fillRect(rect.adjusted(2, 2, -2, -2), QColor(255, 182, 193, 150))  # 薄いピンク
+            else:
+                # 通常の日記がある日付
+                painter.fillRect(rect.adjusted(2, 2, -2, -2), QColor(173, 216, 230, 150))  # 薄い青
+            
+            # 複数の日記がある場合は数を表示
+            if diary_count > 1:
+                painter.setPen(QPen(QColor(0, 0, 255)))
+                painter.drawText(rect.adjusted(0, 0, -2, -int(rect.height() / 2)), 
+                                Qt.AlignRight | Qt.AlignBottom, 
+                                f"{diary_count}")
 
 class CustomTextEdit(QTextEdit):
     """
@@ -95,17 +181,21 @@ class DiaryApp(QMainWindow):
         self.splitter.addWidget(self.left_widget)
         
         # カレンダーの設定
-        self.calendar = QCalendarWidget()
-        self.calendar.setGridVisible(True)
-        self.calendar.setVerticalHeaderFormat(QCalendarWidget.NoVerticalHeader)
-        self.calendar.setMinimumWidth(300)
-        self.calendar.clicked.connect(self.date_selected)
-        
-        # カレンダーに日記のある日をマーク
-        self.update_calendar_marks()
-        
-        self.left_layout.addWidget(QLabel("カレンダー"))
+        self.calendar = CustomCalendar(self)
+        self.calendar.setSelectedDate(self.current_date)
+        self.calendar.selectionChanged.connect(self.date_selected)
         self.left_layout.addWidget(self.calendar)
+        
+        # 日付表示ラベル
+        self.date_label = QLabel()
+        self.date_label.setAlignment(Qt.AlignCenter)
+        self.left_layout.addWidget(self.date_label)
+        
+        # 日記数表示ラベル
+        self.entry_count_label = QLabel()
+        self.entry_count_label.setAlignment(Qt.AlignCenter)
+        self.left_layout.addWidget(self.entry_count_label)
+        self.entry_count_label.setVisible(False)
         
         # タグリスト
         self.left_layout.addWidget(QLabel("タグ一覧"))
@@ -391,38 +481,115 @@ class DiaryApp(QMainWindow):
         help_menu.addAction(about_action)
     
     def update_date_label(self):
-        day_names = ["月曜日", "火曜日", "水曜日", "木曜日", "金曜日", "土曜日", "日曜日"]
-        day_of_week = day_names[self.selected_date.dayOfWeek() - 1]
-        date_str = f"{self.selected_date.year()}年 {self.selected_date.month()}月 {self.selected_date.day()}日 ({day_of_week})"
-        self.date_label.setText(f"<h2>{date_str}</h2>")
+        """
+        選択された日付のラベルを更新する
+        """
+        if self.selected_date:
+            date_str = self.selected_date.toString('yyyy年MM月dd日(ddd)')
+            self.date_label.setText(f"<h2>{date_str}</h2>")
+            
+            # 選択された日付の日記数を表示
+            date_str_iso = self.selected_date.toString('yyyy-MM-dd')
+            entry_count = 0
+            
+            for file_name in os.listdir(self.diary_folder):
+                if file_name.startswith(date_str_iso) and file_name.endswith('.json') and file_name != "metadata.json":
+                    entry_count += 1
+            
+            if entry_count > 0:
+                self.entry_count_label.setText(f"この日付の日記: {entry_count}件")
+                self.entry_count_label.setVisible(True)
+            else:
+                self.entry_count_label.setVisible(False)
     
     def date_selected(self, date):
-        # 保存確認
-        if self.text_edit.document().isModified():
-            reply = QMessageBox.question(self, '確認', 
-                                        '変更を保存しますか？',
-                                        QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel)
-            
-            if reply == QMessageBox.Save:
-                self.save_entry()
-            elif reply == QMessageBox.Cancel:
-                # キャンセルの場合は日付選択を無効にする
-                self.calendar.setSelectedDate(self.selected_date)
-                return
-        
+        """
+        カレンダーで日付が選択された時に呼ばれるメソッド
+        選択された日付の日記があれば読み込む
+        """
         self.selected_date = date
-        self.update_date_label()
-        self.load_entry(date)
-    
-    def load_entry(self, date):
-        # 日付に対応するファイル名
-        file_name = f"{date.toString('yyyy-MM-dd')}.json"
-        file_path = os.path.join(self.diary_folder, file_name)
         
-        if os.path.exists(file_path):
+        # 選択された日付の日記ファイルをチェック
+        date_str = date.toString('yyyy-MM-dd')
+        
+        # 同じ日付で複数の日記がある場合は選択ダイアログを表示
+        diary_files = []
+        for file_name in os.listdir(self.diary_folder):
+            if file_name.startswith(date_str) and file_name.endswith('.json') and file_name != "metadata.json":
+                try:
+                    file_path = os.path.join(self.diary_folder, file_name)
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                        title = data.get("title", "無題")
+                        diary_files.append({
+                            "file_path": file_path,
+                            "title": title,
+                            "file_name": file_name
+                        })
+                except:
+                    continue
+        
+        if diary_files:
+            if len(diary_files) == 1:
+                # 1つしかない場合は直接読み込む
+                self.load_entry(diary_files[0]["file_path"])
+            else:
+                # 複数ある場合は選択ダイアログを表示
+                dialog = QDialog(self)
+                dialog.setWindowTitle("日記を選択")
+                dialog.setMinimumWidth(400)
+                
+                layout = QVBoxLayout(dialog)
+                layout.addWidget(QLabel(f"<b>{date.toString('yyyy年MM月dd日')}の日記が複数あります。</b>"))
+                layout.addWidget(QLabel("読み込む日記を選択してください："))
+                
+                diary_list = QListWidget()
+                for diary in diary_files:
+                    item = QListWidgetItem(diary["title"])
+                    item.setData(Qt.UserRole, diary["file_path"])
+                    diary_list.addItem(item)
+                
+                layout.addWidget(diary_list)
+                
+                button_layout = QHBoxLayout()
+                
+                open_button = QPushButton("開く")
+                open_button.setDefault(True)
+                button_layout.addWidget(open_button)
+                
+                new_button = QPushButton("新規作成")
+                button_layout.addWidget(new_button)
+                
+                cancel_button = QPushButton("キャンセル")
+                button_layout.addWidget(cancel_button)
+                
+                layout.addLayout(button_layout)
+                
+                # イベント接続
+                open_button.clicked.connect(lambda: self.load_entry(diary_list.currentItem().data(Qt.UserRole)) if diary_list.currentItem() else dialog.reject())
+                new_button.clicked.connect(lambda: self.new_entry_with_date(date, dialog))
+                cancel_button.clicked.connect(dialog.reject)
+                diary_list.itemDoubleClicked.connect(lambda item: self.load_entry(item.data(Qt.UserRole)) and dialog.accept())
+                
+                dialog.exec_()
+        else:
+            # 日記が存在しない場合は新しい日記を作成
+            self.new_entry()
+    
+    def load_entry(self, file_path=None):
+        """
+        指定されたファイルから日記を読み込む
+        """
+        if not file_path:
+            return
+            
+        try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                self.title_edit.setText(data.get("title", ""))
+                
+                # メタデータを取得
+                title = data.get("title", "")
+                self.title_edit.setText(title)
                 
                 # HTMLコンテンツ内の画像パスを絶対パスに変換
                 content = data.get("content", "")
@@ -433,60 +600,250 @@ class DiaryApp(QMainWindow):
                 self.tag_edit.setText(", ".join(data.get("tags", [])))
                 
                 # お気に入りボタンの更新
-                is_favorite = file_name[:-5] in self.metadata["favorites"]
+                file_name = os.path.basename(file_path)
+                file_key = file_name[:-5]  # .jsonを除去
+                is_favorite = file_key in self.metadata["favorites"]
                 self.favorite_button.setText("お気に入り解除" if is_favorite else "お気に入り登録")
-        else:
-            self.title_edit.clear()
-            self.text_edit.clear()
-            self.mood_combo.setCurrentIndex(0)
-            self.tag_edit.clear()
-            self.favorite_button.setText("お気に入り登録")
+                
+                # 変更フラグをリセット
+                self.text_edit.document().setModified(False)
+                
+                self.statusBar().showMessage(f"日記を読み込みました: {title}", 5000)
+                return True
+        except Exception as e:
+            self.statusBar().showMessage(f"日記の読み込みに失敗しました: {str(e)}", 5000)
+            return False
+    
+    def new_entry(self):
+        """
+        編集中の内容を確認した後、新しい日記を作成する
+        """
+        # 未保存の変更がある場合は確認
+        if self.text_edit.document().isModified():
+            reply = QMessageBox.question(self,
+                                         '確認',
+                                         '未保存の変更があります。保存しますか？',
+                                         QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel)
+            
+            if reply == QMessageBox.Yes:
+                self.save_entry()
+            elif reply == QMessageBox.Cancel:
+                return
+        
+        # 新しい日記を作成
+        self.title_edit.clear()
+        self.text_edit.clear()
+        self.mood_combo.setCurrentText("普通")
+        self.tag_edit.clear()
         
         # 変更フラグをリセット
         self.text_edit.document().setModified(False)
+        
+        self.statusBar().showMessage("新しい日記を作成しました", 5000)
+    
+    def new_entry_with_date(self, date, dialog=None):
+        """
+        特定の日付で新しい日記を作成する
+        """
+        if dialog:
+            dialog.accept()
+            
+        self.new_entry()
+        self.calendar.setSelectedDate(date)
     
     def save_entry(self):
-        # 現在の入力を保存
-        title = self.title_edit.text()
+        """
+        現在の日記を保存する
+        タイトルが同じ場合は上書き、異なる場合は新規作成
+        """
+        # 各情報を取得
+        title = self.title_edit.text().strip()
+        if not title:
+            title = "無題"
+            self.title_edit.setText(title)
+            
         content = self.text_edit.toHtml()
         
         # HTMLコンテンツ内の画像パスを相対パスに変換
         content = self.convert_image_paths_to_relative(content)
         
         mood = self.mood_combo.currentText()
-        tags = [tag.strip() for tag in self.tag_edit.text().split(",") if tag.strip()]
         
-        # 日付に対応するファイル名
-        file_name = f"{self.selected_date.toString('yyyy-MM-dd')}.json"
-        file_path = os.path.join(self.diary_folder, file_name)
+        # タグをリストに変換
+        tags_text = self.tag_edit.text().strip()
+        tags = []
+        if tags_text:
+            tags = [tag.strip() for tag in tags_text.split(",") if tag.strip()]
         
-        # データの準備
+        # メタデータに追加
+        for tag in tags:
+            if tag not in self.metadata["tags"]:
+                self.metadata["tags"].append(tag)
+        
+        # 日付形式の文字列を取得
+        date_str = self.selected_date.toString('yyyy-MM-dd')
+        
+        # スラグの作成（タイトルをURL安全な形式に変換）
+        # スペースをハイフンに、特殊文字を削除
+        title_slug = re.sub(r'[^\w\s-]', '', title.lower())
+        title_slug = re.sub(r'[\s]+', '-', title_slug)
+        
+        # ファイル名を決定（重複を避けるため）
+        base_file_key = f"{date_str}_{title_slug}"
+        file_key = base_file_key
+        counter = 1
+        
+        # 既存のファイルをチェック
+        existing_file_path = None
+        for file_name in os.listdir(self.diary_folder):
+            if file_name.endswith('.json') and file_name != "metadata.json":
+                if file_name.startswith(date_str):
+                    file_path = os.path.join(self.diary_folder, file_name)
+                    try:
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                            # 同じタイトルが見つかった場合、上書きする
+                            if data.get("title") == title:
+                                existing_file_path = file_path
+                                file_key = file_name[:-5]  # .jsonを除去
+                                break
+                    except:
+                        continue
+        
+        # 同じタイトルがない場合かつ同じslugのファイルが存在する場合、連番を付ける
+        if not existing_file_path:
+            while os.path.exists(os.path.join(self.diary_folder, f"{file_key}.json")):
+                file_key = f"{base_file_key}-{counter}"
+                counter += 1
+                
+        # 保存するデータを構築
         data = {
             "title": title,
             "content": content,
             "mood": mood,
             "tags": tags,
-            "last_modified": datetime.datetime.now().isoformat()
+            "date": date_str,
+            "last_modified": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
         
+        # ファイルパスを構築
+        file_path = os.path.join(self.diary_folder, f"{file_key}.json")
+        
         # ファイルに保存
-        with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        try:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=4)
+            
+            # メタデータを更新
+            self.save_metadata()
+            self.update_tag_list()
+            
+            # 変更フラグをリセット
+            self.text_edit.document().setModified(False)
+            
+            # お気に入りボタンの更新
+            is_favorite = file_key in self.metadata["favorites"]
+            self.favorite_button.setText("お気に入り解除" if is_favorite else "お気に入り登録")
+            
+            self.statusBar().showMessage(f"日記を保存しました: {title}", 5000)
+            return True
+        except Exception as e:
+            self.statusBar().showMessage(f"日記の保存に失敗しました: {str(e)}", 5000)
+            return False
+    
+    def delete_entry(self):
+        """
+        現在の日記を削除する
+        """
+        if not self.title_edit.text().strip():
+            return
+            
+        reply = QMessageBox.question(self,
+                                     '確認',
+                                     '現在の日記を削除してもよろしいですか？',
+                                     QMessageBox.Yes | QMessageBox.No)
         
-        # メタデータの更新
-        for tag in tags:
-            if tag not in self.metadata["tags"]:
-                self.metadata["tags"].append(tag)
+        if reply == QMessageBox.Yes:
+            date_str = self.selected_date.toString('yyyy-MM-dd')
+            title = self.title_edit.text().strip()
+            
+            # 該当タイトルの日記ファイルを検索
+            found = False
+            for file_name in os.listdir(self.diary_folder):
+                if file_name.startswith(date_str) and file_name.endswith('.json') and file_name != "metadata.json":
+                    file_path = os.path.join(self.diary_folder, file_name)
+                    try:
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                            if data.get("title") == title:
+                                # ファイルを削除
+                                os.remove(file_path)
+                                
+                                # お気に入りから削除
+                                file_key = file_name[:-5]
+                                if file_key in self.metadata["favorites"]:
+                                    self.metadata["favorites"].remove(file_key)
+                                    self.save_metadata()
+                                    self.update_favorites_list()
+                                
+                                found = True
+                                break
+                    except:
+                        continue
+            
+            if found:
+                self.new_entry()
+                self.statusBar().showMessage("日記を削除しました", 5000)
+            else:
+                self.statusBar().showMessage("削除する日記が見つかりませんでした", 5000)
+    
+    def toggle_favorite(self):
+        """
+        お気に入り状態を切り替える
+        """
+        date_str = self.selected_date.toString('yyyy-MM-dd')
+        title = self.title_edit.text().strip()
         
-        self.save_metadata()
-        self.update_tag_list()
-        self.update_calendar_marks()
+        if not title:
+            return
+            
+        # 該当タイトルの日記ファイルを検索
+        for file_name in os.listdir(self.diary_folder):
+            if file_name.startswith(date_str) and file_name.endswith('.json') and file_name != "metadata.json":
+                file_path = os.path.join(self.diary_folder, file_name)
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                        if data.get("title") == title:
+                            file_key = file_name[:-5]  # .jsonを除去
+                            
+                            if file_key in self.metadata["favorites"]:
+                                self.metadata["favorites"].remove(file_key)
+                                self.favorite_button.setText("お気に入り登録")
+                                self.statusBar().showMessage("お気に入りから削除しました", 5000)
+                            else:
+                                self.metadata["favorites"].append(file_key)
+                                self.favorite_button.setText("お気に入り解除")
+                                self.statusBar().showMessage("お気に入りに追加しました", 5000)
+                            
+                            self.save_metadata()
+                            self.update_favorites_list()
+                            return
+                except:
+                    continue
         
-        # 変更フラグをリセット
-        self.text_edit.document().setModified(False)
-        
-        # ステータスバーに保存メッセージを表示
-        self.status_bar.showMessage(f"{self.selected_date.toString('yyyy年MM月dd日')}の日記を保存しました", 3000)
+        # 保存されていない場合、保存してからお気に入りに追加
+        if self.save_entry():
+            # 再度トグル処理を行う
+            self.toggle_favorite()
+    
+    def update_calendar_marks(self):
+        """
+        カレンダーのマークを更新
+        """
+        # カレンダーウィジェットのupdateCellsメソッドを呼び出す
+        # これによりCustomCalendarクラスのupdateCellsが実行される
+        self.calendar.updateCells()
     
     def convert_image_paths_to_relative(self, html_content):
         """
@@ -554,38 +911,6 @@ class DiaryApp(QMainWindow):
         if self.text_edit.document().isModified():
             self.save_entry()
             self.status_bar.showMessage("自動保存しました", 2000)
-    
-    def delete_entry(self):
-        reply = QMessageBox.question(self, '確認', 
-                                    'この日の日記を削除してもよろしいですか？',
-                                    QMessageBox.Yes | QMessageBox.No)
-        
-        if reply == QMessageBox.Yes:
-            # 日付に対応するファイル名
-            file_name = f"{self.selected_date.toString('yyyy-MM-dd')}.json"
-            file_path = os.path.join(self.diary_folder, file_name)
-            
-            if os.path.exists(file_path):
-                os.remove(file_path)
-                
-                # お気に入りから削除
-                date_str = self.selected_date.toString('yyyy-MM-dd')
-                if date_str in self.metadata["favorites"]:
-                    self.metadata["favorites"].remove(date_str)
-                    self.save_metadata()
-                    self.update_favorites_list()
-                
-                # カレンダーマークを更新
-                self.update_calendar_marks()
-                
-                # エディタをクリア
-                self.title_edit.clear()
-                self.text_edit.clear()
-                self.mood_combo.setCurrentIndex(0)
-                self.tag_edit.clear()
-                
-                # ステータスバーにメッセージを表示
-                self.status_bar.showMessage(f"{self.selected_date.toString('yyyy年MM月dd日')}の日記を削除しました", 3000)
     
     def export_entry(self):
         # 保存ダイアログを表示
@@ -814,192 +1139,85 @@ class DiaryApp(QMainWindow):
             except Exception as e:
                 QMessageBox.warning(self, "インポートエラー", f"ファイルのインポート中にエラーが発生しました: {str(e)}")
     
-    def new_entry(self):
-        # 保存確認
-        if self.text_edit.document().isModified():
-            reply = QMessageBox.question(self, '確認', 
-                                        '変更を保存しますか？',
-                                        QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel)
-            
-            if reply == QMessageBox.Save:
-                self.save_entry()
-            elif reply == QMessageBox.Cancel:
-                return
+    def update_tag_list(self):
+        """
+        メタデータからタグリストを更新する
+        """
+        self.tag_list.clear()
         
-        # 今日の日付を選択
-        today = QDate.currentDate()
-        self.selected_date = today
-        self.calendar.setSelectedDate(today)
-        self.update_date_label()
-        
-        # エディタをクリア
-        self.title_edit.clear()
-        self.text_edit.clear()
-        self.mood_combo.setCurrentIndex(0)
-        self.tag_edit.clear()
-        
-        # 変更フラグをリセット
-        self.text_edit.document().setModified(False)
-    
-    def toggle_favorite(self):
-        date_str = self.selected_date.toString('yyyy-MM-dd')
-        
-        if date_str in self.metadata["favorites"]:
-            self.metadata["favorites"].remove(date_str)
-            self.favorite_button.setText("お気に入り登録")
-            self.status_bar.showMessage("お気に入りから削除しました", 2000)
-        else:
-            # まず日記が存在するか確認
-            file_name = f"{date_str}.json"
-            file_path = os.path.join(self.diary_folder, file_name)
-            
-            if not os.path.exists(file_path):
-                # 存在しない場合は保存
-                self.save_entry()
-            
-            self.metadata["favorites"].append(date_str)
-            self.favorite_button.setText("お気に入り解除")
-            self.status_bar.showMessage("お気に入りに追加しました", 2000)
-        
-        self.save_metadata()
-        self.update_favorites_list()
+        # タグを追加（アルファベット順）
+        for tag in sorted(self.metadata["tags"]):
+            self.tag_list.addItem(tag)
     
     def update_favorites_list(self):
         self.favorites_list.clear()
         
-        for date_str in sorted(self.metadata["favorites"], reverse=True):
-            file_path = os.path.join(self.diary_folder, f"{date_str}.json")
+        for date_title_str in sorted(self.metadata["favorites"], reverse=True):
+            # ファイル名を構築
+            file_path = os.path.join(self.diary_folder, f"{date_title_str}.json")
             
             if os.path.exists(file_path):
                 with open(file_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     title = data.get("title", "無題")
                     
+                    # 日付部分を抽出（yyyy-MM-dd）
+                    date_str = date_title_str.split('_')[0]
                     date_obj = QDate.fromString(date_str, 'yyyy-MM-dd')
                     display_date = date_obj.toString('yyyy/MM/dd')
                     
                     item = QListWidgetItem(f"{display_date}: {title}")
-                    item.setData(Qt.UserRole, date_str)
+                    item.setData(Qt.UserRole, date_title_str)
                     self.favorites_list.addItem(item)
     
     def open_favorite(self, item):
-        date_str = item.data(Qt.UserRole)
+        date_title_str = item.data(Qt.UserRole)
+        # 日付部分のみを抽出
+        date_str = date_title_str.split('_')[0]
         date = QDate.fromString(date_str, 'yyyy-MM-dd')
         
         # カレンダーの日付を変更
         self.calendar.setSelectedDate(date)
         
-        # 日記を読み込む（date_selectedイベントが発生する）
-    
-    def update_tag_list(self):
-        self.tag_list.clear()
-        
-        for tag in sorted(self.metadata["tags"]):
-            self.tag_list.addItem(tag)
-    
+        # 特定のタイトルの日記を開く
+        file_path = os.path.join(self.diary_folder, f"{date_title_str}.json")
+        if os.path.exists(file_path):
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                title = data.get("title", "")
+                
+                # load_entry で日記を読み込む
+                for file_name in os.listdir(self.diary_folder):
+                    if file_name.startswith(date_str) and file_name.endswith('.json') and file_name != "metadata.json":
+                        diary_file_path = os.path.join(self.diary_folder, file_name)
+                        try:
+                            with open(diary_file_path, 'r', encoding='utf-8') as f:
+                                diary_data = json.load(f)
+                                if diary_data.get("title", "") == title:
+                                    # カレンダーを更新した後、ロード処理を手動で行う
+                                    self.title_edit.setText(title)
+                                    
+                                    # HTMLコンテンツ内の画像パスを絶対パスに変換
+                                    content = diary_data.get("content", "")
+                                    content = self.convert_image_paths_to_absolute(content)
+                                    self.text_edit.setHtml(content)
+                                    
+                                    self.mood_combo.setCurrentText(diary_data.get("mood", "普通"))
+                                    self.tag_edit.setText(", ".join(diary_data.get("tags", [])))
+                                    
+                                    # お気に入りボタンの更新
+                                    is_favorite = file_name[:-5] in self.metadata["favorites"]
+                                    self.favorite_button.setText("お気に入り解除" if is_favorite else "お気に入り登録")
+                                    
+                                    # 変更フラグをリセット
+                                    self.text_edit.document().setModified(False)
+                                    return
+                        except:
+                            continue
+
     def filter_by_tag(self, item):
         selected_tag = item.text()
         
-        matching_dates = []
-        
-        # すべての日記ファイルを検索
-        for file_name in os.listdir(self.diary_folder):
-            if file_name.endswith('.json') and file_name != "metadata.json":
-                file_path = os.path.join(self.diary_folder, file_name)
-                
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    try:
-                        data = json.load(f)
-                        if selected_tag in data.get("tags", []):
-                            date_str = file_name[:-5]  # .jsonを除去
-                            matching_dates.append(date_str)
-                    except:
-                        continue
-        
-        if matching_dates:
-            # 結果表示ダイアログ
-            result_dialog = QDialog(self)
-            result_dialog.setWindowTitle(f"タグ '{selected_tag}' の検索結果")
-            result_dialog.setMinimumWidth(400)
-            
-            layout = QVBoxLayout(result_dialog)
-            
-            result_list = QListWidget()
-            layout.addWidget(result_list)
-            
-            # 結果をリストに追加
-            for date_str in sorted(matching_dates, reverse=True):
-                file_path = os.path.join(self.diary_folder, f"{date_str}.json")
-                
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    title = data.get("title", "無題")
-                    
-                    date_obj = QDate.fromString(date_str, 'yyyy-MM-dd')
-                    display_date = date_obj.toString('yyyy/MM/dd')
-                    
-                    item = QListWidgetItem(f"{display_date}: {title}")
-                    item.setData(Qt.UserRole, date_str)
-                    result_list.addItem(item)
-            
-            # アイテムクリック時の処理
-            result_list.itemDoubleClicked.connect(lambda item: self.open_search_result(item, result_dialog))
-            
-            close_button = QPushButton("閉じる")
-            close_button.clicked.connect(result_dialog.accept)
-            layout.addWidget(close_button)
-            
-            result_dialog.exec_()
-        else:
-            QMessageBox.information(self, "検索結果", f"タグ '{selected_tag}' が付いた日記はありません。")
-    
-    def open_search_result(self, item, dialog):
-        date_str = item.data(Qt.UserRole)
-        date = QDate.fromString(date_str, 'yyyy-MM-dd')
-        
-        # ダイアログを閉じる
-        dialog.accept()
-        
-        # カレンダーの日付を変更
-        self.calendar.setSelectedDate(date)
-    
-    def search_entries(self):
-        # 検索ダイアログ
-        search_dialog = QDialog(self)
-        search_dialog.setWindowTitle("日記を検索")
-        search_dialog.setMinimumWidth(400)
-        
-        layout = QVBoxLayout(search_dialog)
-        
-        layout.addWidget(QLabel("検索キーワード:"))
-        search_edit = QLineEdit()
-        layout.addWidget(search_edit)
-        
-        button_layout = QHBoxLayout()
-        search_button = QPushButton("検索")
-        cancel_button = QPushButton("キャンセル")
-        button_layout.addWidget(search_button)
-        button_layout.addWidget(cancel_button)
-        layout.addLayout(button_layout)
-        
-        result_list = QListWidget()
-        layout.addWidget(result_list)
-        result_list.hide()
-        
-        # ボタンのイベント
-        cancel_button.clicked.connect(search_dialog.reject)
-        search_button.clicked.connect(lambda: self.perform_search(search_edit.text(), result_list))
-        
-        # アイテムクリック時の処理
-        result_list.itemDoubleClicked.connect(lambda item: self.open_search_result(item, search_dialog))
-        
-        search_dialog.exec_()
-    
-    def perform_search(self, keyword, result_list):
-        if not keyword:
-            return
-        
-        keyword = keyword.lower()
         matching_entries = []
         
         # すべての日記ファイルを検索
@@ -1010,565 +1228,106 @@ class DiaryApp(QMainWindow):
                 with open(file_path, 'r', encoding='utf-8') as f:
                     try:
                         data = json.load(f)
-                        title = data.get("title", "").lower()
-                        content = data.get("content", "").lower()
-                        plain_content = self.html_to_plain(content).lower()
-                        
-                        if (keyword in title or 
-                            keyword in plain_content or 
-                            any(keyword in tag.lower() for tag in data.get("tags", []))):
+                        if selected_tag in data.get("tags", []):
+                            # 日付とタイトル情報を保持
+                            file_key = file_name[:-5]  # .jsonを除去
+                            title = data.get("title", "無題")
                             
-                            date_str = file_name[:-5]  # .jsonを除去
-                            matching_entries.append((date_str, data.get("title", "無題")))
+                            # 日付部分を抽出
+                            date_str = file_key.split('_')[0]
+                            date_obj = QDate.fromString(date_str, 'yyyy-MM-dd')
+                            
+                            matching_entries.append({
+                                "file_key": file_key,
+                                "title": title,
+                                "date": date_obj,
+                                "date_str": date_str
+                            })
                     except:
                         continue
-        
-        # 結果を表示
-        result_list.clear()
         
         if matching_entries:
-            result_list.show()
+            # 結果表示ダイアログ
+            result_dialog = QDialog(self)
+            result_dialog.setWindowTitle(f"タグ '{selected_tag}' の検索結果")
+            result_dialog.setMinimumWidth(500)
             
-            for date_str, title in sorted(matching_entries, key=lambda x: x[0], reverse=True):
-                date_obj = QDate.fromString(date_str, 'yyyy-MM-dd')
-                display_date = date_obj.toString('yyyy/MM/dd')
+            layout = QVBoxLayout(result_dialog)
+            
+            result_list = QListWidget()
+            layout.addWidget(result_list)
+            
+            # 結果をリストに追加（日付の新しい順）
+            for entry in sorted(matching_entries, key=lambda x: x["date"], reverse=True):
+                display_date = entry["date"].toString('yyyy/MM/dd')
+                title = entry["title"]
                 
                 item = QListWidgetItem(f"{display_date}: {title}")
-                item.setData(Qt.UserRole, date_str)
+                item.setData(Qt.UserRole, {"date_str": entry["date_str"], "title": title})
                 result_list.addItem(item)
+            
+            # アイテムクリック時の処理
+            result_list.itemDoubleClicked.connect(lambda item: self.open_tag_search_result(item, result_dialog))
+            
+            close_button = QPushButton("閉じる")
+            close_button.clicked.connect(result_dialog.accept)
+            layout.addWidget(close_button)
+            
+            result_dialog.exec_()
         else:
-            QMessageBox.information(self, "検索結果", f"'{keyword}' に一致する日記はありません。")
+            QMessageBox.information(self, "検索結果", f"タグ '{selected_tag}' が付いた日記はありません。")
     
-    def html_to_plain(self, html):
+    def open_tag_search_result(self, item, dialog):
+        data = item.data(Qt.UserRole)
+        date_str = data["date_str"]
+        title = data["title"]
+        date = QDate.fromString(date_str, 'yyyy-MM-dd')
+        
+        # ダイアログを閉じる
+        dialog.accept()
+        
+        # カレンダーの日付を変更
+        self.calendar.setSelectedDate(date)
+        
+        # 特定のタイトルの日記を開く（date_selectedイベントが発生した後）
+        # 少し遅延を入れて確実に日付選択処理が完了してから実行
+        QTimer.singleShot(100, lambda: self.select_diary_by_title(title))
+    
+    def select_diary_by_title(self, title):
         """
-        HTMLからプレーンテキストに変換する
-        
-        Args:
-            html (str): 変換するHTML文字列
-            
-        Returns:
-            str: 変換後のプレーンテキスト
+        指定されたタイトルの日記を選択して表示する
         """
-        import re
-        # タグを削除
-        text = re.sub(r'<[^>]+>', '', html)
-        # HTML特殊文字をデコード
-        text = text.replace('&lt;', '<').replace('&gt;', '>').replace('&amp;', '&').replace('&quot;', '"').replace('&apos;', "'")
-        return text
-    
-    def update_calendar_marks(self):
-        # カレンダーのマークをリセット
-        self.calendar.setDateTextFormat(QDate(), QTextCharFormat())
-        
-        # 日記のある日にマークを付ける
-        for file_name in os.listdir(self.diary_folder):
-            if file_name.endswith('.json') and file_name != "metadata.json":
-                date_str = file_name[:-5]  # .jsonを除去
-                date = QDate.fromString(date_str, 'yyyy-MM-dd')
-                
-                if date.isValid():
-                    format = QTextCharFormat()
-                    format.setBackground(QColor(173, 216, 230))  # 薄い青色
-                    self.calendar.setDateTextFormat(date, format)
-        
-        # お気に入りの日にはさらに目立つマークを付ける
-        for date_str in self.metadata["favorites"]:
-            date = QDate.fromString(date_str, 'yyyy-MM-dd')
-            
-            if date.isValid():
-                format = QTextCharFormat()
-                format.setBackground(QColor(255, 182, 193))  # 薄いピンク色
-                self.calendar.setDateTextFormat(date, format)
-    
-    def save_metadata(self):
-        with open(self.metadata_file, 'w', encoding='utf-8') as f:
-            json.dump(self.metadata, f, ensure_ascii=False, indent=2)
-    
-    def format_bold(self):
-        cursor = self.text_edit.textCursor()
-        format = cursor.charFormat()
-        format.setFontWeight(QFont.Bold if format.fontWeight() != QFont.Bold else QFont.Normal)
-        cursor.mergeCharFormat(format)
-        self.text_edit.setTextCursor(cursor)
-    
-    def format_italic(self):
-        cursor = self.text_edit.textCursor()
-        format = cursor.charFormat()
-        format.setFontItalic(not format.fontItalic())
-        cursor.mergeCharFormat(format)
-        self.text_edit.setTextCursor(cursor)
-    
-    def format_underline(self):
-        cursor = self.text_edit.textCursor()
-        format = cursor.charFormat()
-        format.setFontUnderline(not format.fontUnderline())
-        cursor.mergeCharFormat(format)
-        self.text_edit.setTextCursor(cursor)
-    
-    def change_font(self):
-        current = self.text_edit.currentFont()
-        font, ok = QFontDialog.getFont(current, self)
-        if ok:
-            self.current_font = font
-            self.text_edit.setCurrentFont(font)
-    
-    def change_text_color(self):
-        cursor = self.text_edit.textCursor()
-        current_color = cursor.charFormat().foreground().color()
-        color = QColorDialog.getColor(current_color, self)
-        if color.isValid():
-            format = cursor.charFormat()
-            format.setForeground(color)
-            cursor.mergeCharFormat(format)
-            self.text_edit.setTextCursor(cursor)
-    
-    def insert_bullet_list(self):
-        cursor = self.text_edit.textCursor()
-        
-        # リストフォーマットを作成
-        list_format = QTextListFormat()
-        list_format.setStyle(QTextListFormat.ListDisc)
-        list_format.setIndent(1)
-        
-        cursor.createList(list_format)
-        self.text_edit.setTextCursor(cursor)
-    
-    def apply_heading_shortcut(self, level):
-        """
-        ショートカットキーで見出しスタイルを適用する
-        
-        Args:
-            level (int): 見出しレベル（1=H1, 2=H2, 3=H3）
-        """
-        # 見出しを適用（選択範囲の確認はapply_headingメソッド内で行う）
-        self.apply_heading(level)
-    
-    def apply_heading_from_combo(self, index):
-        """
-        セレクトボックスから選択した見出しスタイルを適用する
-        
-        Args:
-            index (int): コンボボックスのインデックス（0=選択肢, 1=通常, 2=H1, 3=H2, 4=H3）
-        """
-        if index == 0:  # 「スタイルを選択」の場合は何もしない
-            return
-            
-        cursor = self.text_edit.textCursor()
-        
-        # 選択範囲がない場合は、現在の行を選択
-        if not cursor.hasSelection():
-            cursor.movePosition(QTextCursor.StartOfBlock)
-            cursor.movePosition(QTextCursor.EndOfBlock, QTextCursor.KeepAnchor)
-            self.text_edit.setTextCursor(cursor)
-        
-        if index == 1:  # 通常テキスト
-            self.apply_normal_text()
-        elif index >= 2:  # 見出し（インデックスを調整）
-            self.apply_heading(index - 1)
-            
-        # コンボボックスを初期状態に戻す
-        self.heading_combo.setCurrentIndex(0)
-    
-    def apply_normal_text(self):
-        """
-        選択したテキストに通常のスタイルを適用する
-        選択範囲がない場合は、現在の行を選択
-        """
-        cursor = self.text_edit.textCursor()
-        
-        # 選択範囲がない場合は、現在の行を選択
-        if not cursor.hasSelection():
-            cursor.movePosition(QTextCursor.StartOfBlock)
-            cursor.movePosition(QTextCursor.EndOfBlock, QTextCursor.KeepAnchor)
-            self.text_edit.setTextCursor(cursor)
-        
-        # 通常のテキスト書式
-        char_format = QTextCharFormat()
-        char_format.setFontPointSize(11)
-        char_format.setFontWeight(QFont.Normal)
-        
-        # 選択範囲に適用
-        cursor.beginEditBlock()
-        cursor.mergeCharFormat(char_format)
-        cursor.endEditBlock()
-        
-        # カーソル位置を維持
-        position = cursor.position()
-        cursor.clearSelection()
-        cursor.setPosition(position)
-        self.text_edit.setTextCursor(cursor)
-        
-        # 見出しフラグをリセット
-        self.text_edit.heading_applied = False
-        
-        # ステータスバーに通知
-        self.status_bar.showMessage("通常のテキストスタイルを適用しました", 2000)
-    
-    def apply_heading(self, level):
-        """
-        選択したテキストに見出しスタイルを適用する
-        選択範囲がない場合は、現在の行を選択
-        
-        Args:
-            level (int): 見出しレベル（1=H1, 2=H2, 3=H3）
-        """
-        cursor = self.text_edit.textCursor()
-        
-        # 選択範囲がない場合は、現在の行を選択
-        if not cursor.hasSelection():
-            cursor.movePosition(QTextCursor.StartOfBlock)
-            cursor.movePosition(QTextCursor.EndOfBlock, QTextCursor.KeepAnchor)
-            self.text_edit.setTextCursor(cursor)
-            cursor = self.text_edit.textCursor()  # 更新したカーソルを取得
-        
-        # 文字書式を作成
-        char_format = QTextCharFormat()
-        
-        # 見出しレベルに基づいてフォントサイズを設定
-        if level == 1:
-            char_format.setFontPointSize(24)
-            char_format.setFontWeight(QFont.Bold)
-        elif level == 2:
-            char_format.setFontPointSize(18)
-            char_format.setFontWeight(QFont.Bold)
-        elif level == 3:
-            char_format.setFontPointSize(14)
-            char_format.setFontWeight(QFont.Bold)
-        
-        # 選択範囲に見出しスタイルを適用
-        cursor.beginEditBlock()
-        cursor.mergeCharFormat(char_format)
-        cursor.endEditBlock()
-        
-        # カーソル位置を維持しながら選択を解除
-        position = cursor.position()
-        cursor.clearSelection()
-        cursor.setPosition(position)
-        self.text_edit.setTextCursor(cursor)
-        
-        # 見出しフラグを設定
-        self.text_edit.heading_applied = True
-        
-        # ステータスバーに通知
-        self.status_bar.showMessage(f"見出し{level}を適用しました", 2000)
-    
-    def insert_image(self):
-        """
-        画像をテキストエディタに挿入する
-        """
-        options = QFileDialog.Options()
-        file_name, _ = QFileDialog.getOpenFileName(
-            self, "画像を選択", "", 
-            "画像ファイル (*.png *.jpg *.jpeg *.bmp *.gif);;すべてのファイル (*)", 
-            options=options
-        )
-        
-        if file_name:
-            cursor = self.text_edit.textCursor()
-            
-            # 画像を読み込む
-            image = QImage(file_name)
-            
-            if image.isNull():
-                QMessageBox.warning(self, "画像挿入エラー", "選択された画像を読み込めませんでした。")
-                return
-            
-            # 画像が大きすぎる場合はリサイズする
-            max_width = 600
-            if image.width() > max_width:
-                image = image.scaledToWidth(max_width, Qt.SmoothTransformation)
-            
-            # 画像ファイルを日記アプリの画像フォルダにコピーする
-            from pathlib import Path
-            import shutil
-            
-            # オリジナルファイル名を取得
-            original_filename = os.path.basename(file_name)
-            # 現在の日付とタイムスタンプを加えて一意なファイル名を作成
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            new_filename = f"{timestamp}_{original_filename}"
-            new_filepath = os.path.join(self.images_folder, new_filename)
-            
-            # 画像を新しい場所にコピー
-            try:
-                # 画像が大きい場合は新しいサイズで保存
-                if image.width() > max_width:
-                    image.save(new_filepath)
-                else:
-                    shutil.copy2(file_name, new_filepath)
-                
-                # 画像フォーマットを作成（相対パスを使用）
-                image_format = QTextImageFormat()
-                image_format.setName(new_filepath)  # 保存済み画像へのパスを設定
-                image_format.setWidth(image.width())
-                image_format.setHeight(image.height())
-                
-                # 画像を挿入
-                cursor.insertImage(image_format)
-                
-                # ステータスバーに通知
-                self.status_bar.showMessage("画像を挿入しました", 2000)
-            except Exception as e:
-                QMessageBox.warning(self, "画像挿入エラー", f"画像の保存中にエラーが発生しました: {str(e)}")
-    
-    def change_theme(self, theme):
-        self.metadata["theme"] = theme
-        self.save_metadata()
-        self.apply_theme()
-    
-    def apply_theme(self):
-        if self.metadata["theme"] == "dark":
-            # ダークテーマ
-            self.setStyleSheet("""
-                QMainWindow, QDialog {
-                    background-color: #2b2b2b;
-                    color: #e0e0e0;
-                }
-                QWidget {
-                    background-color: #2b2b2b;
-                    color: #e0e0e0;
-                }
-                QTextEdit, QLineEdit, QComboBox, QCalendarWidget {
-                    background-color: #3c3c3c;
-                    color: #e0e0e0;
-                    border: 1px solid #555555;
-                }
-                QPushButton {
-                    background-color: #4b4b4b;
-                    color: #e0e0e0;
-                    border: 1px solid #555555;
-                    padding: 5px;
-                    border-radius: 3px;
-                }
-                QPushButton:hover {
-                    background-color: #555555;
-                }
-                QLabel {
-                    color: #e0e0e0;
-                }
-                QListWidget {
-                    background-color: #3c3c3c;
-                    color: #e0e0e0;
-                    border: 1px solid #555555;
-                }
-                QListWidget::item:selected {
-                    background-color: #4b6eaf;
-                }
-                QMenuBar, QMenu {
-                    background-color: #2b2b2b;
-                    color: #e0e0e0;
-                }
-                QMenuBar::item:selected, QMenu::item:selected {
-                    background-color: #4b6eaf;
-                }
-                QToolBar {
-                    background-color: #323232;
-                    border: 1px solid #555555;
-                }
-                QStatusBar {
-                    background-color: #323232;
-                    color: #e0e0e0;
-                }
-            """)
-        else:
-            # ライトテーマ
-            self.setStyleSheet("")
-    
-    def show_month_stats(self):
-        # 現在の月の統計を表示
-        year = self.selected_date.year()
-        month = self.selected_date.month()
-        
-        # その月の日記エントリ数をカウント
-        entry_count = 0
-        mood_counts = {}
-        tag_counts = {}
+        date_str = self.selected_date.toString('yyyy-MM-dd')
         
         for file_name in os.listdir(self.diary_folder):
-            if file_name.endswith('.json') and file_name != "metadata.json":
-                date_str = file_name[:-5]  # .jsonを除去
-                date = QDate.fromString(date_str, 'yyyy-MM-dd')
-                
-                if date.year() == year and date.month() == month:
-                    entry_count += 1
-                    
-                    # 気分と使用されたタグをカウント
-                    try:
-                        with open(os.path.join(self.diary_folder, file_name), 'r', encoding='utf-8') as f:
-                            data = json.load(f)
+            if file_name.startswith(date_str) and file_name.endswith('.json') and file_name != "metadata.json":
+                file_path = os.path.join(self.diary_folder, file_name)
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                        if data.get("title", "") == title:
+                            # 日記を読み込む
+                            self.title_edit.setText(title)
                             
-                            mood = data.get("mood", "不明")
-                            if mood in mood_counts:
-                                mood_counts[mood] += 1
-                            else:
-                                mood_counts[mood] = 1
+                            # HTMLコンテンツ内の画像パスを絶対パスに変換
+                            content = data.get("content", "")
+                            content = self.convert_image_paths_to_absolute(content)
+                            self.text_edit.setHtml(content)
                             
-                            for tag in data.get("tags", []):
-                                if tag in tag_counts:
-                                    tag_counts[tag] += 1
-                                else:
-                                    tag_counts[tag] = 1
-                    except:
-                        continue
-        
-        # 統計情報を表示
-        month_names = ["1月", "2月", "3月", "4月", "5月", "6月", "7月", "8月", "9月", "10月", "11月", "12月"]
-        month_name = month_names[month - 1]
-        
-        stats_dialog = QDialog(self)
-        stats_dialog.setWindowTitle(f"{year}年{month_name}の統計")
-        stats_dialog.setMinimumWidth(400)
-        
-        layout = QVBoxLayout(stats_dialog)
-        
-        # 基本情報
-        layout.addWidget(QLabel(f"<h3>{year}年{month_name}の統計</h3>"))
-        layout.addWidget(QLabel(f"日記エントリ数: {entry_count}"))
-        
-        # 月のカレンダー日数
-        days_in_month = calendar.monthrange(year, month)[1]
-        completion_rate = round(entry_count / days_in_month * 100, 1)
-        layout.addWidget(QLabel(f"月の記入率: {completion_rate}%"))
-        
-        # 気分の分布
-        if mood_counts:
-            layout.addWidget(QLabel("<h4>気分の分布:</h4>"))
-            for mood, count in sorted(mood_counts.items(), key=lambda x: x[1], reverse=True):
-                percentage = round(count / entry_count * 100, 1)
-                layout.addWidget(QLabel(f"{mood}: {count}回 ({percentage}%)"))
-        
-        # タグの分布
-        if tag_counts:
-            layout.addWidget(QLabel("<h4>よく使われたタグ:</h4>"))
-            for tag, count in sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)[:5]:
-                layout.addWidget(QLabel(f"{tag}: {count}回"))
-        
-        close_button = QPushButton("閉じる")
-        close_button.clicked.connect(stats_dialog.accept)
-        layout.addWidget(close_button)
-        
-        stats_dialog.exec_()
+                            self.mood_combo.setCurrentText(data.get("mood", "普通"))
+                            self.tag_edit.setText(", ".join(data.get("tags", [])))
+                            
+                            # お気に入りボタンの更新
+                            file_key = file_name[:-5]
+                            is_favorite = file_key in self.metadata["favorites"]
+                            self.favorite_button.setText("お気に入り解除" if is_favorite else "お気に入り登録")
+                            
+                            # 変更フラグをリセット
+                            self.text_edit.document().setModified(False)
+                            return
+                except:
+                    continue
     
-    def show_year_stats(self):
-        # 現在の年の統計を表示
-        year = self.selected_date.year()
-        
-        # 月ごとの日記エントリ数をカウント
-        monthly_counts = [0] * 12
-        mood_counts = {}
-        tag_counts = {}
-        
-        for file_name in os.listdir(self.diary_folder):
-            if file_name.endswith('.json') and file_name != "metadata.json":
-                date_str = file_name[:-5]  # .jsonを除去
-                date = QDate.fromString(date_str, 'yyyy-MM-dd')
-                
-                if date.year() == year:
-                    monthly_counts[date.month() - 1] += 1
-                    
-                    # 気分と使用されたタグをカウント
-                    try:
-                        with open(os.path.join(self.diary_folder, file_name), 'r', encoding='utf-8') as f:
-                            data = json.load(f)
-                            
-                            mood = data.get("mood", "不明")
-                            if mood in mood_counts:
-                                mood_counts[mood] += 1
-                            else:
-                                mood_counts[mood] = 1
-                            
-                            for tag in data.get("tags", []):
-                                if tag in tag_counts:
-                                    tag_counts[tag] += 1
-                                else:
-                                    tag_counts[tag] = 1
-                    except:
-                        continue
-        
-        # 統計情報を表示
-        stats_dialog = QDialog(self)
-        stats_dialog.setWindowTitle(f"{year}年の統計")
-        stats_dialog.setMinimumSize(500, 400)
-        
-        layout = QVBoxLayout(stats_dialog)
-        
-        # 基本情報
-        layout.addWidget(QLabel(f"<h3>{year}年の統計</h3>"))
-        total_entries = sum(monthly_counts)
-        layout.addWidget(QLabel(f"日記エントリ総数: {total_entries}"))
-        
-        # 月ごとの統計
-        layout.addWidget(QLabel("<h4>月ごとの日記数:</h4>"))
-        
-        month_grid = QGridLayout()
-        month_names = ["1月", "2月", "3月", "4月", "5月", "6月", "7月", "8月", "9月", "10月", "11月", "12月"]
-        
-        for i, (month, count) in enumerate(zip(month_names, monthly_counts)):
-            month_grid.addWidget(QLabel(month), i // 3, (i % 3) * 2)
-            month_grid.addWidget(QLabel(f"{count}日"), i // 3, (i % 3) * 2 + 1)
-        
-        layout.addLayout(month_grid)
-        
-        # 気分の分布
-        if mood_counts:
-            layout.addWidget(QLabel("<h4>年間の気分分布:</h4>"))
-            mood_layout = QGridLayout()
-            
-            for i, (mood, count) in enumerate(sorted(mood_counts.items(), key=lambda x: x[1], reverse=True)):
-                if total_entries > 0:
-                    percentage = round(count / total_entries * 100, 1)
-                    mood_layout.addWidget(QLabel(mood), i // 2, (i % 2) * 2)
-                    mood_layout.addWidget(QLabel(f"{count}回 ({percentage}%)"), i // 2, (i % 2) * 2 + 1)
-            
-            layout.addLayout(mood_layout)
-        
-        # タグの分布
-        if tag_counts:
-            layout.addWidget(QLabel("<h4>よく使われたタグ:</h4>"))
-            for tag, count in sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)[:8]:
-                percentage = round(count / total_entries * 100, 1)
-                layout.addWidget(QLabel(f"{tag}: {count}回 ({percentage}%)"))
-        
-        close_button = QPushButton("閉じる")
-        close_button.clicked.connect(stats_dialog.accept)
-        layout.addWidget(close_button)
-        
-        stats_dialog.exec_()
-    
-    def show_about(self):
-        about_text = """
-        <h3>PyQt5 日記アプリ</h3>
-        <p>バージョン 1.0</p>
-        <p>このアプリケーションは、日々の出来事や思いを記録するためのシンプルな日記アプリケーションです。</p>
-        <p>主な機能:</p>
-        <ul>
-            <li>日記の作成、編集、保存</li>
-            <li>タグ付け、検索機能</li>
-            <li>お気に入り登録</li>
-            <li>テキスト書式設定</li>
-            <li>統計情報の表示</li>
-            <li>エクスポート/インポート機能</li>
-            <li>ライト/ダークテーマ切り替え</li>
-        </ul>
-        """
-        
-        QMessageBox.about(self, "このアプリについて", about_text)
-    
-    def closeEvent(self, event):
-        # 終了前に保存確認
-        if self.text_edit.document().isModified():
-            reply = QMessageBox.question(self, '確認', 
-                                        '変更を保存しますか？',
-                                        QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel)
-            
-            if reply == QMessageBox.Save:
-                self.save_entry()
-            elif reply == QMessageBox.Cancel:
-                event.ignore()
-                return
-        
-        event.accept()
-
     def show_diary_list(self):
         """
         すべての日記一覧をシンプルに表示するダイアログ
@@ -1628,11 +1387,56 @@ class DiaryApp(QMainWindow):
                 try:
                     with open(file_path, 'r', encoding='utf-8') as f:
                         data = json.load(f)
-                        date_str = file_name[:-5]  # .jsonを除去
-                        date = QDate.fromString(date_str, 'yyyy-MM-dd')
+                        file_key = file_name[:-5]  # .jsonを除去
                         
-                        if date.isValid():
-                            title = data.get("title", "無題")
+                        # 日付情報を取得
+                        date = None
+                        date_str = ""
+                        jp_date = ""
+                        
+                        # ファイル名から日付を抽出
+                        if '_' in file_key:
+                            date_parts = file_key.split('_')[0]
+                            date = QDate.fromString(date_parts, 'yyyy-MM-dd')
+                            if date.isValid():
+                                date_str = date_parts
+                                jp_date = date.toString('yyyy年MM月dd日(ddd)')
+                        
+                        # ファイル名が直接日付形式の場合（旧形式）
+                        if not date or not date.isValid():
+                            date = QDate.fromString(file_key, 'yyyy-MM-dd')
+                            if date.isValid():
+                                date_str = file_key
+                                jp_date = date.toString('yyyy年MM月dd日(ddd)')
+                        
+                        # 日付が取得できなかった場合はファイルの更新日時を使用
+                        if not date or not date.isValid():
+                            if "last_modified" in data:
+                                try:
+                                    modified_str = data["last_modified"]
+                                    modified_date = datetime.datetime.strptime(modified_str, "%Y-%m-%d %H:%M:%S")
+                                    date = QDate(modified_date.year, modified_date.month, modified_date.day)
+                                    date_str = date.toString('yyyy-MM-dd')
+                                    jp_date = date.toString('yyyy年MM月dd日(ddd)')
+                                except:
+                                    # 現在の日付を使用
+                                    date = QDate.currentDate()
+                                    date_str = date.toString('yyyy-MM-dd')
+                                    jp_date = date.toString('yyyy年MM月dd日(ddd)')
+                            else:
+                                # 現在の日付を使用
+                                date = QDate.currentDate()
+                                date_str = date.toString('yyyy-MM-dd')
+                                jp_date = date.toString('yyyy年MM月dd日(ddd)')
+                        
+                        title = data.get("title", "無題")
+                        # タイトルが空の場合
+                        if title.strip() == "":
+                            title = "無題"
+                            
+                            date_str = date_parts
+                            jp_date = date.toString('yyyy年MM月dd日')
+                            
                             mood = data.get("mood", "")
                             tags = data.get("tags", [])
                             tags_str = ", ".join(tags) if tags else "タグなし"
@@ -1643,9 +1447,6 @@ class DiaryApp(QMainWindow):
                             plain_content = self.html_to_plain(content)
                             preview = plain_content[:100] + "..." if len(plain_content) > 100 else plain_content
                             
-                            # 日本語形式の日付表示
-                            jp_date = date.toString('yyyy年MM月dd日(ddd)')
-                            
                             diary_entries.append({
                                 "date": date,
                                 "date_str": date_str,
@@ -1655,14 +1456,35 @@ class DiaryApp(QMainWindow):
                                 "tags": tags,
                                 "tags_str": tags_str,
                                 "modified": modified,
-                                "preview": preview
+                                "preview": preview,
+                                "file_key": file_key,
+                                "file_path": file_path
                             })
-                except:
-                    continue
+                except Exception as e:
+                    # 読み込みエラーの場合でも最低限の情報を表示
+                    print(f"ファイル読み込みエラー: {file_name} - {str(e)}")
+                    file_key = file_name[:-5]
+                    date = QDate.currentDate()
+                    diary_entries.append({
+                        "date": date,
+                        "date_str": date.toString('yyyy-MM-dd'),
+                        "jp_date": date.toString('yyyy年MM月dd日(ddd)'),
+                        "title": f"[読み込みエラー] {file_key}",
+                        "mood": "",
+                        "tags": [],
+                        "tags_str": "タグなし",
+                        "modified": "",
+                        "preview": "ファイルの読み込みに失敗しました。",
+                        "file_key": file_key,
+                        "file_path": file_path
+                    })
         
         # 日付順に並べ替え（新しい順）
         diary_entries.sort(key=lambda x: x["date"], reverse=True)
         original_entries = diary_entries.copy()  # 元のリストを保持
+        
+        # エントリ数を表示
+        title_label.setText(f"<h2>日記一覧 ({len(diary_entries)}件)</h2>")
         
         # リストに追加する関数
         def update_list_items():
@@ -1672,7 +1494,7 @@ class DiaryApp(QMainWindow):
                 display_text = f"{entry['title']} - {entry['jp_date']}"
                 
                 item = QListWidgetItem(display_text)
-                item.setData(Qt.UserRole, entry['date_str'])
+                item.setData(Qt.UserRole, {"date_str": entry['date_str'], "title": entry['title'], "file_path": entry.get('file_path', '')})
                 diary_list.addItem(item)
         
         # 初期表示
@@ -1692,11 +1514,16 @@ class DiaryApp(QMainWindow):
             filtered_entries = []
             for entry in original_entries:
                 if (filter_text in entry['title'].lower() or 
-                    filter_text in entry['jp_date'].lower()):
+                    filter_text in entry['jp_date'].lower() or
+                    filter_text in entry.get('tags_str', '').lower() or
+                    filter_text in entry.get('preview', '').lower()):
                     filtered_entries.append(entry)
             
             diary_entries = filtered_entries
             sort_entries()  # 現在のソート順を適用
+            
+            # フィルタリング結果の表示
+            title_label.setText(f"<h2>日記一覧 ({len(diary_entries)}件 / 全{len(original_entries)}件)</h2>")
         
         # ソート機能
         def sort_entries():
@@ -1717,10 +1544,26 @@ class DiaryApp(QMainWindow):
         
         # アイテムクリック時の処理
         def open_diary(item):
-            date_str = item.data(Qt.UserRole)
+            data = item.data(Qt.UserRole)
+            date_str = data["date_str"]
+            title = data["title"]
+            file_path = data.get("file_path", "")
+            
+            # ファイルパスが直接指定されている場合はそれを使用
+            if file_path and os.path.exists(file_path):
+                self.load_entry(file_path)
+                diary_list_dialog.accept()
+                return
+                
+            # それ以外の場合は日付とタイトルから検索
             date = QDate.fromString(date_str, 'yyyy-MM-dd')
+            
+            # カレンダーの日付を変更して特定のタイトルの日記を開く
             self.calendar.setSelectedDate(date)
             diary_list_dialog.accept()
+            
+            # 少し遅延を入れて確実に日付選択処理が完了してから実行
+            QTimer.singleShot(100, lambda: self.select_diary_by_title(title))
         
         diary_list.itemDoubleClicked.connect(open_diary)
         
@@ -1739,11 +1582,14 @@ class DiaryApp(QMainWindow):
             if not diary_list.currentItem():
                 return
                 
-            date_str = diary_list.currentItem().data(Qt.UserRole)
+            data = diary_list.currentItem().data(Qt.UserRole)
+            date_str = data["date_str"]
+            title = data["title"]
+            
             selected_entry = None
             
             for entry in diary_entries:
-                if entry['date_str'] == date_str:
+                if entry['date_str'] == date_str and entry['title'] == title:
                     selected_entry = entry
                     break
             
@@ -1783,209 +1629,261 @@ class DiaryApp(QMainWindow):
         # ダイアログを表示
         diary_list_dialog.exec_()
 
-    def show_advanced_search(self):
+    def html_to_plain(self, html_content):
         """
-        詳細検索ダイアログを表示する
+        HTMLコンテンツをプレーンテキストに変換する
+        """
+        from PyQt5.QtCore import Qt
+        from PyQt5.QtGui import QTextDocument
+        
+        doc = QTextDocument()
+        doc.setHtml(html_content)
+        return doc.toPlainText()
+    
+    def change_font(self):
+        """
+        フォント選択ダイアログを表示し、選択されたフォントをテキストエディタに適用する
+        """
+        font, ok = QFontDialog.getFont(self.current_font, self)
+        if ok:
+            self.current_font = font
+            self.text_edit.setFont(font)
+            self.statusBar().showMessage(f"フォントを変更しました: {font.family()} {font.pointSize()}pt", 3000)
+    
+    def format_bold(self):
+        """
+        選択されたテキストを太字にする
+        """
+        cursor = self.text_edit.textCursor()
+        format = cursor.charFormat()
+        if format.fontWeight() == QFont.Bold:
+            format.setFontWeight(QFont.Normal)
+        else:
+            format.setFontWeight(QFont.Bold)
+        cursor.mergeCharFormat(format)
+        self.text_edit.setTextCursor(cursor)
+        self.statusBar().showMessage("スタイルを適用しました", 2000)
+    
+    def format_italic(self):
+        """
+        選択されたテキストを斜体にする
+        """
+        cursor = self.text_edit.textCursor()
+        format = cursor.charFormat()
+        format.setFontItalic(not format.fontItalic())
+        cursor.mergeCharFormat(format)
+        self.text_edit.setTextCursor(cursor)
+        self.statusBar().showMessage("スタイルを適用しました", 2000)
+    
+    def format_underline(self):
+        """
+        選択されたテキストに下線を引く
+        """
+        cursor = self.text_edit.textCursor()
+        format = cursor.charFormat()
+        format.setFontUnderline(not format.fontUnderline())
+        cursor.mergeCharFormat(format)
+        self.text_edit.setTextCursor(cursor)
+        self.statusBar().showMessage("スタイルを適用しました", 2000)
+    
+    def change_text_color(self):
+        """
+        選択されたテキストの色を変更する
+        """
+        cursor = self.text_edit.textCursor()
+        format = cursor.charFormat()
+        current_color = format.foreground().color()
+        color = QColorDialog.getColor(current_color, self)
+        if color.isValid():
+            format.setForeground(color)
+            cursor.mergeCharFormat(format)
+            self.text_edit.setTextCursor(cursor)
+            self.statusBar().showMessage("文字色を変更しました", 2000)
+    
+    def insert_bullet_list(self):
+        """
+        箇条書きリストを挿入/解除する
+        """
+        cursor = self.text_edit.textCursor()
+        
+        # リスト形式を取得
+        list_format = QTextListFormat()
+        list_format.setStyle(QTextListFormat.ListDisc)  # ディスク型（黒丸）
+        list_format.setIndent(1)  # インデントレベル
+        
+        # リストを作成または解除
+        cursor.createList(list_format)
+        self.statusBar().showMessage("箇条書きを適用しました", 2000)
+    
+    def insert_image(self):
+        """
+        画像を挿入する
+        """
+        options = QFileDialog.Options()
+        file_name, _ = QFileDialog.getOpenFileName(
+            self, "画像を選択", "", 
+            "画像ファイル (*.png *.jpg *.jpeg *.bmp *.gif)",
+            options=options
+        )
+        
+        if file_name:
+            # 日記フォルダー内の画像フォルダにコピー
+            import shutil
+            import os
+            from datetime import datetime
+            
+            # ファイル名を取得
+            base_name = os.path.basename(file_name)
+            # タイムスタンプを追加（重複防止）
+            timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+            new_filename = f"{timestamp}_{base_name}"
+            
+            # 保存先パス
+            dest_path = os.path.join(self.images_folder, new_filename)
+            
+            # ファイルをコピー
+            try:
+                shutil.copy2(file_name, dest_path)
+                
+                # カーソル位置に画像を挿入
+                cursor = self.text_edit.textCursor()
+                image_format = QTextImageFormat()
+                image_format.setName(dest_path)
+                
+                # 適切なサイズに調整（大きすぎる画像に対して）
+                image = QImage(dest_path)
+                max_width = self.text_edit.width() - 50  # マージンを考慮
+                if image.width() > max_width:
+                    image_format.setWidth(max_width)
+                
+                cursor.insertImage(image_format)
+                self.statusBar().showMessage("画像を挿入しました", 2000)
+            except Exception as e:
+                QMessageBox.warning(self, "画像挿入エラー", f"画像の挿入中にエラーが発生しました: {str(e)}")
+    
+    def apply_heading_from_combo(self, index):
+        """
+        コンボボックスから選択された見出しスタイルを適用する
+        """
+        if index == 0:  # インデックス0は説明用なので何もしない
+            return
+        elif index == 1:  # 通常テキスト
+            self.apply_normal_text()
+        else:
+            # 見出しレベル（2→1, 3→2, 4→3）
+            level = index - 1
+            self.apply_heading(level)
+        
+        # コンボボックスを最初の項目に戻す
+        self.heading_combo.setCurrentIndex(0)
+    
+    def apply_normal_text(self):
+        """
+        選択したテキストを通常のテキストスタイルに戻す
+        選択がない場合は現在の行全体を選択
+        """
+        cursor = self.text_edit.textCursor()
+        
+        # 選択がない場合は現在の行を選択
+        if not cursor.hasSelection():
+            cursor.movePosition(QTextCursor.StartOfBlock)
+            cursor.movePosition(QTextCursor.EndOfBlock, QTextCursor.KeepAnchor)
+            self.text_edit.setTextCursor(cursor)
+        
+        format = QTextCharFormat()
+        format.setFontPointSize(11)  # 通常サイズ
+        format.setFontWeight(QFont.Normal)  # 通常の太さ
+        
+        cursor.mergeCharFormat(format)
+        self.text_edit.document().clearUndoRedoStacks()
+        self.heading_applied = False
+        
+        self.statusBar().showMessage("通常テキストを適用しました", 2000)
+    
+    def apply_heading(self, level):
+        """
+        選択したテキストに見出しスタイルを適用する
+        選択がない場合は現在の行全体を選択
+        
+        Args:
+            level (int): 見出しレベル（1, 2, 3）
+        """
+        cursor = self.text_edit.textCursor()
+        
+        # 選択がない場合は現在の行を選択
+        if not cursor.hasSelection():
+            cursor.movePosition(QTextCursor.StartOfBlock)
+            cursor.movePosition(QTextCursor.EndOfBlock, QTextCursor.KeepAnchor)
+            self.text_edit.setTextCursor(cursor)
+        
+        format = QTextCharFormat()
+        
+        # 見出しレベルに応じてフォントサイズと太さを設定
+        if level == 1:
+            format.setFontPointSize(24)  # 大見出し
+        elif level == 2:
+            format.setFontPointSize(18)  # 中見出し
+        elif level == 3:
+            format.setFontPointSize(14)  # 小見出し
+        
+        format.setFontWeight(QFont.Bold)  # 太字
+        
+        cursor.mergeCharFormat(format)
+        self.text_edit.document().clearUndoRedoStacks()
+        self.heading_applied = True
+        
+        self.statusBar().showMessage(f"見出し {level} を適用しました", 2000)
+    
+    def apply_heading_shortcut(self, level):
+        """
+        ショートカットキーから見出しスタイルを適用する
+        
+        Args:
+            level (int): 見出しレベル（1, 2, 3）
+        """
+        self.apply_heading(level)
+    
+    def search_entries(self):
+        """
+        クイック検索ダイアログを表示する
         """
         # 検索ダイアログの作成
         search_dialog = QDialog(self)
-        search_dialog.setWindowTitle("詳細検索")
-        search_dialog.setMinimumSize(700, 600)
+        search_dialog.setWindowTitle("クイック検索")
+        search_dialog.setMinimumWidth(400)
         
         layout = QVBoxLayout(search_dialog)
         
-        # タイトル
-        title_label = QLabel("<h2>日記の詳細検索</h2>")
-        layout.addWidget(title_label)
-        
-        # 検索条件入力フォーム
-        form_layout = QGridLayout()
-        form_layout.setVerticalSpacing(10)
-        form_layout.setHorizontalSpacing(15)
-        
-        # キーワード検索
-        form_layout.addWidget(QLabel("<b>キーワード:</b>"), 0, 0)
+        # 検索ボックス
+        layout.addWidget(QLabel("検索キーワード:"))
         keyword_edit = QLineEdit()
-        keyword_edit.setPlaceholderText("検索キーワードを入力（複数キーワードはスペース区切り）")
-        form_layout.addWidget(keyword_edit, 0, 1, 1, 3)
-        
-        # 検索オプション
-        option_layout = QHBoxLayout()
-        
-        title_only_check = QCheckBox("タイトルのみ検索")
-        option_layout.addWidget(title_only_check)
-        
-        case_sensitive_check = QCheckBox("大文字/小文字を区別")
-        option_layout.addWidget(case_sensitive_check)
-        
-        exact_match_check = QCheckBox("完全一致")
-        option_layout.addWidget(exact_match_check)
-        
-        option_layout.addStretch()
-        form_layout.addLayout(option_layout, 1, 1, 1, 3)
-        
-        # 日付範囲
-        form_layout.addWidget(QLabel("<b>日付範囲:</b>"), 2, 0)
-        
-        date_range_layout = QHBoxLayout()
-        
-        # 開始日
-        from_layout = QVBoxLayout()
-        from_layout.addWidget(QLabel("開始日:"))
-        date_from = QCalendarWidget()
-        date_from.setMaximumHeight(200)
-        from_layout.addWidget(date_from)
-        
-        # 終了日
-        to_layout = QVBoxLayout()
-        to_layout.addWidget(QLabel("終了日:"))
-        date_to = QCalendarWidget()
-        date_to.setMaximumHeight(200)
-        date_to.setSelectedDate(QDate.currentDate())
-        to_layout.addWidget(date_to)
-        
-        # 一ヶ月前の日付をデフォルトの開始日に設定
-        default_from_date = QDate.currentDate().addMonths(-1)
-        date_from.setSelectedDate(default_from_date)
-        
-        date_range_layout.addLayout(from_layout)
-        date_range_layout.addLayout(to_layout)
-        
-        form_layout.addLayout(date_range_layout, 3, 0, 1, 4)
-        
-        # 日付ショートカットボタン
-        date_shortcuts = QHBoxLayout()
-        
-        today_btn = QPushButton("今日")
-        today_btn.clicked.connect(lambda: set_date_range(0))
-        date_shortcuts.addWidget(today_btn)
-        
-        week_btn = QPushButton("過去1週間")
-        week_btn.clicked.connect(lambda: set_date_range(7))
-        date_shortcuts.addWidget(week_btn)
-        
-        month_btn = QPushButton("過去1ヶ月")
-        month_btn.clicked.connect(lambda: set_date_range(30))
-        date_shortcuts.addWidget(month_btn)
-        
-        three_month_btn = QPushButton("過去3ヶ月")
-        three_month_btn.clicked.connect(lambda: set_date_range(90))
-        date_shortcuts.addWidget(three_month_btn)
-        
-        year_btn = QPushButton("過去1年")
-        year_btn.clicked.connect(lambda: set_date_range(365))
-        date_shortcuts.addWidget(year_btn)
-        
-        all_btn = QPushButton("すべて")
-        all_btn.clicked.connect(lambda: set_date_range(-1))
-        date_shortcuts.addWidget(all_btn)
-        
-        form_layout.addLayout(date_shortcuts, 4, 0, 1, 4)
-        
-        # 日付範囲を設定する関数
-        def set_date_range(days):
-            end_date = QDate.currentDate()
-            date_to.setSelectedDate(end_date)
-            
-            if days == -1:
-                # すべての期間（古い日付）
-                start_date = QDate(2000, 1, 1)
-            else:
-                # 指定日数前
-                start_date = end_date.addDays(-days)
-            
-            date_from.setSelectedDate(start_date)
-        
-        # タグ検索
-        form_layout.addWidget(QLabel("<b>タグ:</b>"), 5, 0)
-        tag_combo = QComboBox()
-        tag_combo.addItem("すべてのタグ")
-        tag_combo.addItems(sorted(self.metadata["tags"]))
-        form_layout.addWidget(tag_combo, 5, 1)
-        
-        # 気分検索
-        form_layout.addWidget(QLabel("<b>気分:</b>"), 5, 2)
-        mood_combo = QComboBox()
-        mood_combo.addItem("すべての気分")
-        mood_combo.addItems(self.metadata["moods"])
-        form_layout.addWidget(mood_combo, 5, 3)
-        
-        layout.addLayout(form_layout)
+        keyword_edit.setPlaceholderText("検索キーワードを入力...")
+        layout.addWidget(keyword_edit)
         
         # 検索ボタン
-        search_layout = QHBoxLayout()
         search_button = QPushButton("検索")
-        search_button.setMinimumHeight(35)
-        search_button.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
-        search_layout.addWidget(search_button)
+        layout.addWidget(search_button)
         
-        reset_button = QPushButton("条件リセット")
-        reset_button.clicked.connect(lambda: reset_search_form())
-        search_layout.addWidget(reset_button)
-        
-        layout.addLayout(search_layout)
-        
-        # 条件リセット関数
-        def reset_search_form():
-            keyword_edit.clear()
-            title_only_check.setChecked(False)
-            case_sensitive_check.setChecked(False)
-            exact_match_check.setChecked(False)
-            set_date_range(30)  # デフォルトの日付範囲に戻す
-            tag_combo.setCurrentIndex(0)
-            mood_combo.setCurrentIndex(0)
-            result_list.clear()
-            result_label.setText("検索結果:")
-        
-        # 結果表示リスト
-        result_label = QLabel("<b>検索結果:</b>")
-        layout.addWidget(result_label)
-        
+        # 結果リスト
+        layout.addWidget(QLabel("検索結果:"))
         result_list = QListWidget()
-        result_list.setAlternatingRowColors(True)
-        result_list.setStyleSheet("""
-            QListWidget::item { 
-                border-bottom: 1px solid #ddd; 
-                padding: 5px;
-            }
-            QListWidget::item:selected { 
-                background-color: #e6f2ff;
-                color: black;
-            }
-        """)
         layout.addWidget(result_list)
+        
+        # 閉じるボタン
+        close_button = QPushButton("閉じる")
+        close_button.clicked.connect(search_dialog.accept)
+        layout.addWidget(close_button)
         
         # 検索実行関数
         def perform_search():
-            keyword = keyword_edit.text()
-            from_date = date_from.selectedDate()
-            to_date = date_to.selectedDate()
-            selected_tag = tag_combo.currentText()
-            selected_mood = mood_combo.currentText()
-            title_only = title_only_check.isChecked()
-            case_sensitive = case_sensitive_check.isChecked()
-            exact_match = exact_match_check.isChecked()
-            
-            # 結果リストをクリア
+            keyword = keyword_edit.text().strip().lower()
+            if not keyword:
+                return
+                
             result_list.clear()
-            
-            # キーワードの処理
-            keywords = []
-            if keyword:
-                if not case_sensitive:
-                    keyword = keyword.lower()
-                    
-                if exact_match:
-                    keywords = [keyword]
-                else:
-                    keywords = keyword.split()
-            
-            # 全ての日記ファイルを検索
             matching_entries = []
             
             # 全ての日記ファイルを検索
-            matching_entries = []
-            
             for file_name in os.listdir(self.diary_folder):
                 if file_name.endswith('.json') and file_name != "metadata.json":
                     file_path = os.path.join(self.diary_folder, file_name)
@@ -1994,88 +1892,602 @@ class DiaryApp(QMainWindow):
                         with open(file_path, 'r', encoding='utf-8') as f:
                             data = json.load(f)
                             
-                            # 日付チェック
-                            date_str = file_name[:-5]  # .jsonを除去
-                            date = QDate.fromString(date_str, 'yyyy-MM-dd')
+                            # 日付部分を抽出
+                            file_key = file_name[:-5]  # .jsonを除去
+                            date_str = ""
                             
-                            if not (from_date <= date <= to_date):
-                                continue
-                            
-                            # タグチェック
-                            if selected_tag != "すべてのタグ" and selected_tag not in data.get("tags", []):
-                                continue
-                            
-                            # 気分チェック
-                            if selected_mood != "すべての気分" and selected_mood != data.get("mood", ""):
-                                continue
-                            
-                            # キーワードチェック
-                            if keyword:
-                                title = data.get("title", "").lower()
-                                content = data.get("content", "").lower()
-                                plain_content = self.html_to_plain(content).lower()
-                                tags = " ".join(data.get("tags", [])).lower()
+                            # 新しいファイル命名形式 (yyyy-MM-dd_title-slug.json)
+                            if '_' in file_key:
+                                date_str = file_key.split('_')[0]
+                            else:
+                                # 旧形式 (yyyy-MM-dd.json)
+                                date_str = file_key
                                 
-                                if (keyword not in title and 
-                                    keyword not in plain_content and 
-                                    keyword not in tags):
-                                    continue
-                            
-                            # すべての条件をパス
+                            # 有効な日付かチェック
+                            date = QDate.fromString(date_str, 'yyyy-MM-dd')
+                            if not date.isValid():
+                                continue
+                                
                             title = data.get("title", "無題")
-                            jp_date = date.toString('yyyy年MM月dd日')
+                            content = self.html_to_plain(data.get("content", ""))
+                            tags = ", ".join(data.get("tags", []))
                             
+                            # キーワードが含まれているかチェック
+                            if (keyword in title.lower() or 
+                                keyword in content.lower() or 
+                                keyword in tags.lower()):
+                                matching_entries.append({
+                                    "date": date,
+                                    "title": title,
+                                    "date_str": date_str
+                                })
+                    except:
+                        continue
+            
+            # 日付で降順にソート
+            matching_entries.sort(key=lambda x: x["date"], reverse=True)
+            
+            if matching_entries:
+                # 結果リストに追加
+                for entry in matching_entries:
+                    display_date = entry["date"].toString('yyyy/MM/dd')
+                    item = QListWidgetItem(f"{display_date}: {entry['title']}")
+                    item.setData(Qt.UserRole, {"date_str": entry["date_str"], "title": entry["title"]})
+                    result_list.addItem(item)
+            else:
+                result_list.addItem("検索結果がありません")
+        
+        # 検索結果アイテムがダブルクリックされた時の処理
+        def open_search_result(item):
+            data = item.data(Qt.UserRole)
+            if not data:  # "検索結果がありません"の場合
+                return
+                
+            date_str = data["date_str"]
+            title = data["title"]
+            date = QDate.fromString(date_str, 'yyyy-MM-dd')
+            
+            # ダイアログを閉じる
+            search_dialog.accept()
+            
+            # カレンダーの日付を変更
+            self.calendar.setSelectedDate(date)
+            
+            # 少し遅延を入れて確実に日付選択処理が完了してから実行
+            QTimer.singleShot(100, lambda: self.select_diary_by_title(title))
+        
+        # イベント接続
+        search_button.clicked.connect(perform_search)
+        keyword_edit.returnPressed.connect(perform_search)
+        result_list.itemDoubleClicked.connect(open_search_result)
+        
+        # ダイアログを表示
+        search_dialog.exec_()
+    
+    def show_advanced_search(self):
+        """
+        詳細検索ダイアログを表示する
+        """
+        # 検索ダイアログの作成
+        search_dialog = QDialog(self)
+        search_dialog.setWindowTitle("詳細検索")
+        search_dialog.setMinimumSize(700, 500)
+        
+        layout = QVBoxLayout(search_dialog)
+        
+        # 検索条件グループ
+        search_group = QWidget()
+        search_layout = QGridLayout(search_group)
+        
+        # キーワード検索
+        search_layout.addWidget(QLabel("キーワード:"), 0, 0)
+        keyword_edit = QLineEdit()
+        keyword_edit.setPlaceholderText("検索キーワードを入力...")
+        search_layout.addWidget(keyword_edit, 0, 1, 1, 3)
+        
+        # 日付範囲
+        search_layout.addWidget(QLabel("日付範囲:"), 1, 0)
+        date_from = QCalendarWidget()
+        date_from.setMaximumHeight(200)
+        date_from.setSelectedDate(QDate.currentDate().addMonths(-1))
+        search_layout.addWidget(date_from, 1, 1)
+        
+        search_layout.addWidget(QLabel("～"), 1, 2, Qt.AlignCenter)
+        
+        date_to = QCalendarWidget()
+        date_to.setMaximumHeight(200)
+        date_to.setSelectedDate(QDate.currentDate())
+        search_layout.addWidget(date_to, 1, 3)
+        
+        # タグ検索
+        search_layout.addWidget(QLabel("タグ:"), 2, 0)
+        tag_combo = QComboBox()
+        tag_combo.addItem("すべて")
+        tag_combo.addItems(sorted(self.metadata["tags"]))
+        search_layout.addWidget(tag_combo, 2, 1)
+        
+        # 気分検索
+        search_layout.addWidget(QLabel("気分:"), 2, 2)
+        mood_combo = QComboBox()
+        mood_combo.addItem("すべて")
+        mood_combo.addItems(self.metadata["moods"])
+        search_layout.addWidget(mood_combo, 2, 3)
+        
+        # 検索オプション
+        search_layout.addWidget(QLabel("検索オプション:"), 3, 0)
+        title_only_check = QCheckBox("タイトルのみ")
+        search_layout.addWidget(title_only_check, 3, 1)
+        
+        case_sensitive_check = QCheckBox("大文字/小文字を区別")
+        search_layout.addWidget(case_sensitive_check, 3, 2)
+        
+        exact_match_check = QCheckBox("完全一致")
+        search_layout.addWidget(exact_match_check, 3, 3)
+        
+        layout.addWidget(search_group)
+        
+        # 検索ボタン
+        search_button = QPushButton("検索")
+        layout.addWidget(search_button)
+        
+        # 結果リスト
+        layout.addWidget(QLabel("検索結果:"))
+        result_list = QListWidget()
+        layout.addWidget(result_list)
+        
+        # 閉じるボタン
+        close_button = QPushButton("閉じる")
+        close_button.clicked.connect(search_dialog.accept)
+        layout.addWidget(close_button)
+        
+        # 検索実行関数
+        def perform_search():
+            # 検索条件を取得
+            keyword = keyword_edit.text().strip()
+            from_date = date_from.selectedDate()
+            to_date = date_to.selectedDate()
+            selected_tag = tag_combo.currentText()
+            selected_mood = mood_combo.currentText()
+            title_only = title_only_check.isChecked()
+            case_sensitive = case_sensitive_check.isChecked()
+            exact_match = exact_match_check.isChecked()
+            
+            result_list.clear()
+            matching_entries = []
+            
+            # キーワード処理
+            if not case_sensitive and keyword:
+                keyword = keyword.lower()
+            
+            # 全ての日記ファイルを検索
+            for file_name in os.listdir(self.diary_folder):
+                if file_name.endswith('.json') and file_name != "metadata.json":
+                    file_path = os.path.join(self.diary_folder, file_name)
+                    
+                    try:
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                            
+                            # 日付部分を抽出
+                            file_key = file_name[:-5]  # .jsonを除去
+                            date_str = ""
+                            
+                            # 新しいファイル命名形式 (yyyy-MM-dd_title-slug.json)
+                            if '_' in file_key:
+                                date_str = file_key.split('_')[0]
+                            else:
+                                # 旧形式 (yyyy-MM-dd.json)
+                                date_str = file_key
+                            
+                            # 有効な日付かチェック
+                            date = QDate.fromString(date_str, 'yyyy-MM-dd')
+                            if not date.isValid():
+                                continue
+                            
+                            # 日付範囲チェック
+                            if date < from_date or date > to_date:
+                                continue
+                            
+                            title = data.get("title", "無題")
+                            content = self.html_to_plain(data.get("content", ""))
+                            tags = data.get("tags", [])
+                            mood = data.get("mood", "")
+                            
+                            # タグフィルター
+                            if selected_tag != "すべて" and selected_tag not in tags:
+                                continue
+                            
+                            # 気分フィルター
+                            if selected_mood != "すべて" and selected_mood != mood:
+                                continue
+                            
+                            # キーワード検索
+                            if keyword:
+                                # 検索対象の文字列
+                                if title_only:
+                                    search_text = title
+                                else:
+                                    search_text = f"{title} {content} {' '.join(tags)}"
+                                
+                                if not case_sensitive:
+                                    search_text = search_text.lower()
+                                
+                                # 検索方法
+                                if exact_match:
+                                    if keyword not in search_text.split():
+                                        continue
+                                else:
+                                    if keyword not in search_text:
+                                        continue
+                            
+                            # 条件に一致
                             matching_entries.append({
                                 "date": date,
-                                "date_str": date_str,
-                                "jp_date": jp_date,
-                                "title": title
+                                "title": title,
+                                "date_str": date_str
                             })
                     except:
                         continue
             
-            # 日付順に並べ替え（新しい順）
+            # 日付で降順にソート
             matching_entries.sort(key=lambda x: x["date"], reverse=True)
             
-            # 結果をリストに追加
             if matching_entries:
+                # 結果リストに追加
                 for entry in matching_entries:
-                    item = QListWidgetItem(f"{entry['jp_date']} - {entry['title']}")
-                    item.setData(Qt.UserRole, entry['date_str'])
+                    display_date = entry["date"].toString('yyyy/MM/dd')
+                    item = QListWidgetItem(f"{display_date}: {entry['title']}")
+                    item.setData(Qt.UserRole, {"date_str": entry["date_str"], "title": entry["title"]})
                     result_list.addItem(item)
                 
-                result_label.setText(f"検索結果: {len(matching_entries)}件見つかりました")
+                # 結果数を表示
+                result_count = len(matching_entries)
+                result_list.insertItem(0, f"-- 検索結果: {result_count}件 --")
             else:
-                result_label.setText("検索結果: 0件")
+                result_list.addItem("検索結果がありません")
         
-        # 検索ボタンに関数を接続
-        search_button.clicked.connect(perform_search)
-        
-        # アイテムクリック時の処理
-        def open_diary(item):
-            date_str = item.data(Qt.UserRole)
+        # 検索結果アイテムがダブルクリックされた時の処理
+        def open_search_result(item):
+            # 最初の項目（結果概要行）の場合は何もしない
+            if item.text().startswith("-- 検索結果"):
+                return
+                
+            # "検索結果がありません"の場合も何もしない
+            if item.text() == "検索結果がありません":
+                return
+            
+            data = item.data(Qt.UserRole)
+            date_str = data["date_str"]
+            title = data["title"]
             date = QDate.fromString(date_str, 'yyyy-MM-dd')
-            self.calendar.setSelectedDate(date)
+            
+            # ダイアログを閉じる
             search_dialog.accept()
+            
+            # カレンダーの日付を変更
+            self.calendar.setSelectedDate(date)
+            
+            # 少し遅延を入れて確実に日付選択処理が完了してから実行
+            QTimer.singleShot(100, lambda: self.select_diary_by_title(title))
         
-        result_list.itemDoubleClicked.connect(open_diary)
-        
-        # ボタンレイアウト
-        button_layout = QHBoxLayout()
-        
-        open_button = QPushButton("開く")
-        open_button.clicked.connect(lambda: open_diary(result_list.currentItem()) if result_list.currentItem() else None)
-        button_layout.addWidget(open_button)
-        
-        close_button = QPushButton("閉じる")
-        close_button.clicked.connect(search_dialog.reject)
-        button_layout.addWidget(close_button)
-        
-        layout.addLayout(button_layout)
+        # イベント接続
+        search_button.clicked.connect(perform_search)
+        result_list.itemDoubleClicked.connect(open_search_result)
         
         # ダイアログを表示
         search_dialog.exec_()
 
+    def show_month_stats(self):
+        """
+        月間統計を表示する
+        """
+        current_month = self.calendar.selectedDate().toString('yyyy-MM')
+        
+        # データ収集
+        diary_count = 0
+        mood_counts = {}
+        tag_counts = {}
+        
+        for file_name in os.listdir(self.diary_folder):
+            if file_name.endswith('.json') and file_name != "metadata.json":
+                file_path = os.path.join(self.diary_folder, file_name)
+                
+                try:
+                    # 日付チェック
+                    file_key = file_name[:-5]  # .jsonを除去
+                    date_str = ""
+                    
+                    # 新しいファイル命名形式 (yyyy-MM-dd_title-slug.json)
+                    if '_' in file_key:
+                        date_str = file_key.split('_')[0]
+                    else:
+                        # 旧形式 (yyyy-MM-dd.json)
+                        date_str = file_key
+                    
+                    # 月が一致するかチェック
+                    if not date_str.startswith(current_month):
+                        continue
+                    
+                    # ファイルを読み込む
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                        
+                        # 日記数をカウント
+                        diary_count += 1
+                        
+                        # 気分をカウント
+                        mood = data.get("mood", "不明")
+                        if mood in mood_counts:
+                            mood_counts[mood] += 1
+                        else:
+                            mood_counts[mood] = 1
+                        
+                        # タグをカウント
+                        for tag in data.get("tags", []):
+                            if tag in tag_counts:
+                                tag_counts[tag] += 1
+                            else:
+                                tag_counts[tag] = 1
+                except:
+                    continue
+        
+        # 統計ダイアログの作成
+        stats_dialog = QDialog(self)
+        stats_dialog.setWindowTitle("月間統計")
+        stats_dialog.setMinimumWidth(400)
+        
+        layout = QVBoxLayout(stats_dialog)
+        
+        # 期間表示
+        month_label = QLabel(f"<h2>{current_month}の統計</h2>")
+        layout.addWidget(month_label)
+        
+        # 日記数
+        diary_count_label = QLabel(f"日記数: {diary_count}件")
+        layout.addWidget(diary_count_label)
+        
+        # 気分グラフ
+        if mood_counts:
+            layout.addWidget(QLabel("<h3>気分の分布</h3>"))
+            
+            mood_list = QListWidget()
+            for mood, count in sorted(mood_counts.items(), key=lambda x: x[1], reverse=True):
+                item = QListWidgetItem(f"{mood}: {count}件")
+                mood_list.addItem(item)
+            
+            layout.addWidget(mood_list)
+        
+        # タググラフ
+        if tag_counts:
+            layout.addWidget(QLabel("<h3>よく使われたタグ</h3>"))
+            
+            tag_list = QListWidget()
+            for tag, count in sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)[:10]:  # 上位10件
+                item = QListWidgetItem(f"{tag}: {count}件")
+                tag_list.addItem(item)
+            
+            layout.addWidget(tag_list)
+        
+        # 閉じるボタン
+        close_button = QPushButton("閉じる")
+        close_button.clicked.connect(stats_dialog.accept)
+        layout.addWidget(close_button)
+        
+        # ダイアログを表示
+        stats_dialog.exec_()
+    
+    def show_year_stats(self):
+        """
+        年間統計を表示する
+        """
+        current_year = self.calendar.selectedDate().toString('yyyy')
+        
+        # データ収集
+        diary_count = 0
+        month_counts = {f"{current_year}-{str(month).zfill(2)}": 0 for month in range(1, 13)}
+        mood_counts = {}
+        tag_counts = {}
+        
+        for file_name in os.listdir(self.diary_folder):
+            if file_name.endswith('.json') and file_name != "metadata.json":
+                file_path = os.path.join(self.diary_folder, file_name)
+                
+                try:
+                    # 日付チェック
+                    file_key = file_name[:-5]  # .jsonを除去
+                    date_str = ""
+                    
+                    # 新しいファイル命名形式 (yyyy-MM-dd_title-slug.json)
+                    if '_' in file_key:
+                        date_str = file_key.split('_')[0]
+                    else:
+                        # 旧形式 (yyyy-MM-dd.json)
+                        date_str = file_key
+                    
+                    # 年が一致するかチェック
+                    if not date_str.startswith(current_year):
+                        continue
+                    
+                    # ファイルを読み込む
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                        
+                        # 日記数をカウント
+                        diary_count += 1
+                        
+                        # 月別カウント
+                        month_str = date_str[:7]  # yyyy-MM
+                        if month_str in month_counts:
+                            month_counts[month_str] += 1
+                        
+                        # 気分をカウント
+                        mood = data.get("mood", "不明")
+                        if mood in mood_counts:
+                            mood_counts[mood] += 1
+                        else:
+                            mood_counts[mood] = 1
+                        
+                        # タグをカウント
+                        for tag in data.get("tags", []):
+                            if tag in tag_counts:
+                                tag_counts[tag] += 1
+                            else:
+                                tag_counts[tag] = 1
+                except:
+                    continue
+        
+        # 統計ダイアログの作成
+        stats_dialog = QDialog(self)
+        stats_dialog.setWindowTitle("年間統計")
+        stats_dialog.setMinimumWidth(500)
+        
+        layout = QVBoxLayout(stats_dialog)
+        
+        # 期間表示
+        year_label = QLabel(f"<h2>{current_year}年の統計</h2>")
+        layout.addWidget(year_label)
+        
+        # 日記数
+        diary_count_label = QLabel(f"日記数: {diary_count}件")
+        layout.addWidget(diary_count_label)
+        
+        # 月別グラフ
+        layout.addWidget(QLabel("<h3>月別の日記数</h3>"))
+        
+        month_list = QListWidget()
+        for month_str, count in sorted(month_counts.items()):
+            # 日本語の月名に変換
+            month = int(month_str.split('-')[1])
+            month_name = ["1月", "2月", "3月", "4月", "5月", "6月", "7月", "8月", "9月", "10月", "11月", "12月"][month-1]
+            
+            item = QListWidgetItem(f"{month_name}: {count}件")
+            month_list.addItem(item)
+        
+        layout.addWidget(month_list)
+        
+        # 気分グラフ
+        if mood_counts:
+            layout.addWidget(QLabel("<h3>気分の分布</h3>"))
+            
+            mood_list = QListWidget()
+            for mood, count in sorted(mood_counts.items(), key=lambda x: x[1], reverse=True):
+                item = QListWidgetItem(f"{mood}: {count}件")
+                mood_list.addItem(item)
+            
+            layout.addWidget(mood_list)
+        
+        # タググラフ
+        if tag_counts:
+            layout.addWidget(QLabel("<h3>よく使われたタグ</h3>"))
+            
+            tag_list = QListWidget()
+            for tag, count in sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)[:10]:  # 上位10件
+                item = QListWidgetItem(f"{tag}: {count}件")
+                tag_list.addItem(item)
+            
+            layout.addWidget(tag_list)
+        
+        # 閉じるボタン
+        close_button = QPushButton("閉じる")
+        close_button.clicked.connect(stats_dialog.accept)
+        layout.addWidget(close_button)
+        
+        # ダイアログを表示
+        stats_dialog.exec_()
+
+    def show_about(self):
+        """
+        アプリの情報を表示する
+        """
+        QMessageBox.about(self, "このアプリについて",
+                      """<h1>PyQt5 日記アプリ</h1>
+<p>PyQt5で作成されたシンプルな日記アプリケーションです。</p>
+<p>機能：</p>
+<ul>
+    <li>日記の作成、保存、編集</li>
+    <li>日付ごとの管理</li>
+    <li>タグ付け</li>
+    <li>お気に入り機能</li>
+    <li>カレンダー表示</li>
+    <li>テキスト書式設定</li>
+    <li>画像挿入</li>
+    <li>エクスポート/インポート</li>
+    <li>検索機能</li>
+    <li>統計表示</li>
+</ul>
+<p>バージョン: 1.0</p>
+<p>© 2023 All Rights Reserved</p>""")
+    
+    def save_metadata(self):
+        """
+        メタデータをJSONファイルに保存する
+        """
+        with open(self.metadata_file, 'w', encoding='utf-8') as f:
+            json.dump(self.metadata, f, ensure_ascii=False, indent=4)
+    
+    def change_theme(self, theme):
+        """
+        アプリケーションのテーマを変更する
+        """
+        self.metadata["theme"] = theme
+        self.save_metadata()
+        self.apply_theme()
+    
+    def apply_theme(self):
+        """
+        選択されたテーマを適用する
+        """
+        if self.metadata["theme"] == "dark":
+            # ダークテーマ
+            app = QApplication.instance()
+            app.setStyleSheet("""
+                QMainWindow, QDialog {
+                    background-color: #2D2D30;
+                    color: #F1F1F1;
+                }
+                QWidget {
+                    background-color: #2D2D30;
+                    color: #F1F1F1;
+                }
+                QTextEdit, QLineEdit, QComboBox, QCalendarWidget {
+                    background-color: #1E1E1E;
+                    color: #F1F1F1;
+                    border: 1px solid #3F3F46;
+                }
+                QPushButton {
+                    background-color: #0E639C;
+                    color: #FFFFFF;
+                    border: none;
+                    padding: 5px;
+                    min-height: 25px;
+                }
+                QPushButton:hover {
+                    background-color: #1177BB;
+                }
+                QPushButton:pressed {
+                    background-color: #0D5487;
+                }
+                QHeaderView::section {
+                    background-color: #2D2D30;
+                    color: #F1F1F1;
+                }
+                QListWidget, QListWidget::item {
+                    background-color: #1E1E1E;
+                    color: #F1F1F1;
+                }
+                QListWidget::item:selected {
+                    background-color: #264F78;
+                    color: #FFFFFF;
+                }
+                QToolBar {
+                    background-color: #2D2D30;
+                    border: none;
+                }
+            """)
+        else:
+            # ライトテーマ
+            app = QApplication.instance()
+            app.setStyleSheet("")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
