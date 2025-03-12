@@ -42,7 +42,7 @@ pip install PyQt5
 
 ```
 git clone https://github.com/tacyan/DiaryApp.git
-cd diary-app
+cd DiaryApp
 ```
 
 ## 使用方法
