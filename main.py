@@ -1433,33 +1433,32 @@ class DiaryApp(QMainWindow):
                         # タイトルが空の場合
                         if title.strip() == "":
                             title = "無題"
-                            
-                            date_str = date_parts
-                            jp_date = date.toString('yyyy年MM月dd日')
-                            
-                            mood = data.get("mood", "")
-                            tags = data.get("tags", [])
-                            tags_str = ", ".join(tags) if tags else "タグなし"
-                            modified = data.get("last_modified", "")
-                            
-                            # テキスト内容のプレビュー
-                            content = data.get("content", "")
-                            plain_content = self.html_to_plain(content)
-                            preview = plain_content[:100] + "..." if len(plain_content) > 100 else plain_content
-                            
-                            diary_entries.append({
-                                "date": date,
-                                "date_str": date_str,
-                                "jp_date": jp_date,
-                                "title": title,
-                                "mood": mood,
-                                "tags": tags,
-                                "tags_str": tags_str,
-                                "modified": modified,
-                                "preview": preview,
-                                "file_key": file_key,
-                                "file_path": file_path
-                            })
+                        
+                        # 気分、タグなどの情報取得
+                        mood = data.get("mood", "")
+                        tags = data.get("tags", [])
+                        tags_str = ", ".join(tags) if tags else "タグなし"
+                        modified = data.get("last_modified", "")
+                        
+                        # テキスト内容のプレビュー
+                        content = data.get("content", "")
+                        plain_content = self.html_to_plain(content)
+                        preview = plain_content[:100] + "..." if len(plain_content) > 100 else plain_content
+                        
+                        # 日記エントリを追加
+                        diary_entries.append({
+                            "date": date,
+                            "date_str": date_str,
+                            "jp_date": jp_date,
+                            "title": title,
+                            "mood": mood,
+                            "tags": tags,
+                            "tags_str": tags_str,
+                            "modified": modified,
+                            "preview": preview,
+                            "file_key": file_key,
+                            "file_path": file_path
+                        })
                 except Exception as e:
                     # 読み込みエラーの場合でも最低限の情報を表示
                     print(f"ファイル読み込みエラー: {file_name} - {str(e)}")
