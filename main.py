@@ -8,9 +8,40 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                             QLineEdit, QMessageBox, QTabWidget, QGridLayout, QListWidget,
                             QListWidgetItem, QFileDialog, QColorDialog, QFontDialog, QMenu,
                             QAction, QToolBar, QStatusBar, QSplitter, QDialog)
-from PyQt5.QtGui import QFont, QIcon, QTextCharFormat, QColor, QTextCursor, QTextListFormat
+from PyQt5.QtGui import QFont, QIcon, QTextCharFormat, QColor, QTextCursor, QTextListFormat, QTextBlockFormat, QImage, QTextImageFormat
 from PyQt5.QtCore import Qt, QDate, QTimer, QSize, QUrl
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
+
+class CustomTextEdit(QTextEdit):
+    """
+    キーイベントをカスタマイズしたQTextEditのサブクラス
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.heading_applied = False  # 見出しが適用されたかどうかのフラグ
+    
+    def keyPressEvent(self, event):
+        """
+        キー入力イベントをオーバーライドして、Enterキーが押されたときに通常のテキストスタイルに戻す
+        """
+        if event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
+            cursor = self.textCursor()
+            current_format = cursor.charFormat()
+            
+            # 親クラスのイベント処理を呼び出し（改行を実行）
+            super().keyPressEvent(event)
+            
+            # 改行後に通常のテキストスタイルを適用
+            if self.heading_applied:
+                cursor = self.textCursor()
+                normal_format = QTextCharFormat()
+                normal_format.setFontPointSize(11)  # 通常のフォントサイズに戻す
+                normal_format.setFontWeight(QFont.Normal)  # 通常の太さに戻す
+                cursor.setCharFormat(normal_format)
+                self.heading_applied = False  # フラグをリセット
+        else:
+            # その他のキーイベントは通常通り処理
+            super().keyPressEvent(event)
 
 class DiaryApp(QMainWindow):
     def __init__(self):
@@ -22,6 +53,11 @@ class DiaryApp(QMainWindow):
         self.diary_folder = "diary_entries"
         if not os.path.exists(self.diary_folder):
             os.makedirs(self.diary_folder)
+        
+        # 画像保存フォルダ
+        self.images_folder = os.path.join(self.diary_folder, "images")
+        if not os.path.exists(self.images_folder):
+            os.makedirs(self.images_folder)
             
         # メタデータファイル
         self.metadata_file = os.path.join(self.diary_folder, "metadata.json")
@@ -150,6 +186,48 @@ class DiaryApp(QMainWindow):
         color_action.triggered.connect(self.change_text_color)
         self.format_toolbar.addAction(color_action)
         
+        # 見出しセレクトボックス
+        self.heading_label = QLabel("見出し:")
+        self.format_toolbar.addWidget(self.heading_label)
+        
+        self.heading_combo = QComboBox()
+        # シンプルなテキストアイテム
+        self.heading_combo.addItem("テキストスタイル")
+        self.heading_combo.addItem("通常テキスト")
+        self.heading_combo.addItem("見出し 1")
+        self.heading_combo.addItem("見出し 2")
+        self.heading_combo.addItem("見出し 3")
+        
+        # 各アイテムのスタイル設定
+        self.heading_combo.setItemData(0, "適用するテキストスタイルを選択", Qt.ToolTipRole)
+        
+        self.heading_combo.setToolTip("テキストを選択してスタイルを適用\nCtrl+1, Ctrl+2, Ctrl+3 で見出しを直接適用")
+        self.heading_combo.setMinimumWidth(120)  # 適切な幅に調整
+        self.heading_combo.currentIndexChanged.connect(self.apply_heading_from_combo)
+        self.format_toolbar.addWidget(self.heading_combo)
+        
+        # ショートカットキーの設定（メインウィンドウに追加）
+        h1_shortcut = QAction("H1見出し", self)
+        h1_shortcut.setShortcut("Ctrl+1")
+        h1_shortcut.triggered.connect(lambda: self.apply_heading_shortcut(1))
+        self.addAction(h1_shortcut)
+        
+        h2_shortcut = QAction("H2見出し", self)
+        h2_shortcut.setShortcut("Ctrl+2")
+        h2_shortcut.triggered.connect(lambda: self.apply_heading_shortcut(2))
+        self.addAction(h2_shortcut)
+        
+        h3_shortcut = QAction("H3見出し", self)
+        h3_shortcut.setShortcut("Ctrl+3")
+        h3_shortcut.triggered.connect(lambda: self.apply_heading_shortcut(3))
+        self.addAction(h3_shortcut)
+        
+        # 画像挿入アクション
+        image_action = QAction(QIcon.fromTheme("insert-image"), "画像挿入", self)
+        image_action.triggered.connect(self.insert_image)
+        image_action.setShortcut("Ctrl+P")
+        self.format_toolbar.addAction(image_action)
+        
         # 箇条書きアクション
         bullet_action = QAction(QIcon.fromTheme("format-justify-fill"), "箇条書き", self)
         bullet_action.triggered.connect(self.insert_bullet_list)
@@ -158,7 +236,7 @@ class DiaryApp(QMainWindow):
         self.right_layout.addWidget(self.format_toolbar)
         
         # テキストエディタ
-        self.text_edit = QTextEdit()
+        self.text_edit = CustomTextEdit()
         self.text_edit.setFont(self.current_font)
         self.right_layout.addWidget(self.text_edit)
         
@@ -335,7 +413,12 @@ class DiaryApp(QMainWindow):
             with open(file_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 self.title_edit.setText(data.get("title", ""))
-                self.text_edit.setHtml(data.get("content", ""))
+                
+                # HTMLコンテンツ内の画像パスを絶対パスに変換
+                content = data.get("content", "")
+                content = self.convert_image_paths_to_absolute(content)
+                self.text_edit.setHtml(content)
+                
                 self.mood_combo.setCurrentText(data.get("mood", "普通"))
                 self.tag_edit.setText(", ".join(data.get("tags", [])))
                 
@@ -356,6 +439,10 @@ class DiaryApp(QMainWindow):
         # 現在の入力を保存
         title = self.title_edit.text()
         content = self.text_edit.toHtml()
+        
+        # HTMLコンテンツ内の画像パスを相対パスに変換
+        content = self.convert_image_paths_to_relative(content)
+        
         mood = self.mood_combo.currentText()
         tags = [tag.strip() for tag in self.tag_edit.text().split(",") if tag.strip()]
         
@@ -390,6 +477,68 @@ class DiaryApp(QMainWindow):
         
         # ステータスバーに保存メッセージを表示
         self.status_bar.showMessage(f"{self.selected_date.toString('yyyy年MM月dd日')}の日記を保存しました", 3000)
+    
+    def convert_image_paths_to_relative(self, html_content):
+        """
+        HTML内の画像パスを相対パスに変換する
+        
+        Args:
+            html_content (str): 変換するHTML文字列
+            
+        Returns:
+            str: 変換後のHTML文字列
+        """
+        import re
+        
+        # 画像フォルダの絶対パス
+        images_abs_path = os.path.abspath(self.images_folder)
+        
+        # src="[絶対パス]" のパターンを検索
+        def replace_path(match):
+            path = match.group(1)
+            # 絶対パスが画像フォルダ内を指している場合は相対パスに変換
+            if os.path.abspath(path).startswith(images_abs_path):
+                return f'src="{os.path.relpath(path, os.path.abspath(self.diary_folder))}"'
+            return match.group(0)
+        
+        # 正規表現で置換
+        pattern = r'src="([^"]+)"'
+        result = re.sub(pattern, replace_path, html_content)
+        
+        return result
+    
+    def convert_image_paths_to_absolute(self, html_content):
+        """
+        HTML内の相対画像パスを絶対パスに変換する
+        
+        Args:
+            html_content (str): 変換するHTML文字列
+            
+        Returns:
+            str: 変換後のHTML文字列
+        """
+        import re
+        
+        # 日記フォルダの絶対パス
+        diary_abs_path = os.path.abspath(self.diary_folder)
+        
+        # src="[相対パス]" のパターンを検索
+        def replace_path(match):
+            path = match.group(1)
+            # 相対パスの場合は絶対パスに変換
+            if not os.path.isabs(path) and not path.startswith(("http:", "https:")):
+                # URIエンコーディングされたパスを戻す場合もある
+                import urllib.parse
+                path = urllib.parse.unquote(path)
+                abs_path = os.path.join(diary_abs_path, path)
+                return f'src="{abs_path}"'
+            return match.group(0)
+        
+        # 正規表現で置換
+        pattern = r'src="([^"]+)"'
+        result = re.sub(pattern, replace_path, html_content)
+        
+        return result
     
     def auto_save(self):
         if self.text_edit.document().isModified():
@@ -433,7 +582,7 @@ class DiaryApp(QMainWindow):
         options = QFileDialog.Options()
         file_name, _ = QFileDialog.getSaveFileName(self, "日記をエクスポート", 
                                                 f"diary_{self.selected_date.toString('yyyy-MM-dd')}.html", 
-                                                "HTMLファイル (*.html);;テキストファイル (*.txt);;JSONファイル (*.json)", 
+                                                "HTMLファイル (*.html);;テキストファイル (*.txt);;JSONファイル (*.json);;画像付きHTMLフォルダ (*.zip)", 
                                                 options=options)
         
         if file_name:
@@ -503,8 +652,105 @@ class DiaryApp(QMainWindow):
                 
                 with open(file_name, 'w', encoding='utf-8') as f:
                     json.dump(json_data, f, ensure_ascii=False, indent=2)
+                    
+            elif file_name.endswith('.zip'):
+                # 画像付きHTMLフォルダとしてエクスポート
+                self.export_with_images(file_name)
             
             self.status_bar.showMessage(f"日記を {file_name} にエクスポートしました", 3000)
+    
+    def export_with_images(self, zip_file_path):
+        """
+        日記を画像付きでZIPファイルにエクスポートする
+        
+        Args:
+            zip_file_path (str): 出力するZIPファイルのパス
+        """
+        import zipfile
+        import tempfile
+        import re
+        
+        try:
+            # 一時ディレクトリを作成
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # 画像を保存するディレクトリを作成
+                images_dir = os.path.join(temp_dir, "images")
+                os.makedirs(images_dir)
+                
+                # 日記のタイトルと内容を取得
+                title = self.title_edit.text()
+                content = self.text_edit.toHtml()
+                date_str = self.selected_date.toString('yyyy年MM月dd日')
+                
+                # HTML内の画像パスを抽出
+                image_paths = []
+                pattern = r'src="([^"]+)"'
+                for match in re.finditer(pattern, content):
+                    path = match.group(1)
+                    # 絶対パスを処理（相対パスは日記フォルダからの相対パス）
+                    if not os.path.isabs(path) and not path.startswith(("http:", "https:")):
+                        # 相対パスを絶対パスに変換
+                        abs_path = os.path.join(os.path.abspath(self.diary_folder), path)
+                        if os.path.exists(abs_path):
+                            image_paths.append((path, abs_path))
+                    elif os.path.exists(path) and not path.startswith(("http:", "https:")):
+                        image_paths.append((os.path.basename(path), path))
+                
+                # 画像をコピーしてHTMLを更新
+                for rel_path, abs_path in image_paths:
+                    # 画像ファイル名だけを取得
+                    img_filename = os.path.basename(rel_path)
+                    # 一時ディレクトリにコピー
+                    dest_path = os.path.join(images_dir, img_filename)
+                    import shutil
+                    shutil.copy2(abs_path, dest_path)
+                    
+                    # HTMLのパスを更新
+                    content = content.replace(f'src="{abs_path}"', f'src="images/{img_filename}"')
+                    if 'images/' in rel_path:  # 既に相対パスの場合
+                        content = content.replace(f'src="{rel_path}"', f'src="images/{img_filename}"')
+                
+                # HTMLファイルを作成
+                html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>{title}</title>
+    <style>
+        body {{ font-family: "Yu Gothic", sans-serif; margin: 20px; }}
+        .diary-date {{ color: #555; }}
+        .diary-title {{ font-size: 1.5em; margin: 10px 0; }}
+        .diary-content {{ margin-top: 20px; }}
+        img {{ max-width: 100%; height: auto; }}
+    </style>
+</head>
+<body>
+    <div class="diary-date">{date_str}</div>
+    <h1 class="diary-title">{title}</h1>
+    <div class="diary-content">{content}</div>
+</body>
+</html>"""
+                
+                html_path = os.path.join(temp_dir, "index.html")
+                with open(html_path, 'w', encoding='utf-8') as f:
+                    f.write(html_content)
+                
+                # ZIPファイルを作成
+                with zipfile.ZipFile(zip_file_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                    # HTMLファイルを追加
+                    zipf.write(html_path, arcname="index.html")
+                    
+                    # 画像ファイルを追加
+                    for root, _, files in os.walk(images_dir):
+                        for file in files:
+                            file_path = os.path.join(root, file)
+                            arcname = os.path.join("images", file)
+                            zipf.write(file_path, arcname=arcname)
+                
+                self.status_bar.showMessage(f"画像付き日記を {zip_file_path} にエクスポートしました", 3000)
+        
+        except Exception as e:
+            QMessageBox.warning(self, "エクスポートエラー", f"画像付きエクスポート中にエラーが発生しました: {str(e)}")
     
     def import_entry(self):
         options = QFileDialog.Options()
@@ -865,6 +1111,183 @@ class DiaryApp(QMainWindow):
         
         cursor.createList(list_format)
         self.text_edit.setTextCursor(cursor)
+    
+    def apply_heading_shortcut(self, level):
+        """
+        ショートカットキーで見出しスタイルを適用する
+        
+        Args:
+            level (int): 見出しレベル（1=H1, 2=H2, 3=H3）
+        """
+        cursor = self.text_edit.textCursor()
+        
+        # 選択範囲がない場合は、現在の行を選択
+        if not cursor.hasSelection():
+            cursor.movePosition(QTextCursor.StartOfBlock)
+            cursor.movePosition(QTextCursor.EndOfBlock, QTextCursor.KeepAnchor)
+            self.text_edit.setTextCursor(cursor)
+        
+        # 見出しを適用
+        self.apply_heading(level)
+    
+    def apply_heading_from_combo(self, index):
+        """
+        セレクトボックスから選択した見出しスタイルを適用する
+        
+        Args:
+            index (int): コンボボックスのインデックス（0=選択肢, 1=通常, 2=H1, 3=H2, 4=H3）
+        """
+        if index == 0:  # 「スタイルを選択」の場合は何もしない
+            return
+            
+        cursor = self.text_edit.textCursor()
+        
+        # 選択範囲がない場合は、現在の行を選択
+        if not cursor.hasSelection():
+            cursor.movePosition(QTextCursor.StartOfBlock)
+            cursor.movePosition(QTextCursor.EndOfBlock, QTextCursor.KeepAnchor)
+            self.text_edit.setTextCursor(cursor)
+        
+        if index == 1:  # 通常テキスト
+            self.apply_normal_text()
+        elif index >= 2:  # 見出し（インデックスを調整）
+            self.apply_heading(index - 1)
+            
+        # コンボボックスを初期状態に戻す
+        self.heading_combo.setCurrentIndex(0)
+    
+    def apply_normal_text(self):
+        """
+        選択したテキストに通常のスタイルを適用する
+        """
+        cursor = self.text_edit.textCursor()
+        
+        if not cursor.hasSelection():
+            return
+        
+        # 通常のテキスト書式
+        char_format = QTextCharFormat()
+        char_format.setFontPointSize(11)
+        char_format.setFontWeight(QFont.Normal)
+        
+        # 選択範囲に適用
+        cursor.beginEditBlock()
+        cursor.mergeCharFormat(char_format)
+        cursor.endEditBlock()
+        
+        # カーソル位置を維持
+        position = cursor.position()
+        cursor.clearSelection()
+        cursor.setPosition(position)
+        self.text_edit.setTextCursor(cursor)
+        
+        # 見出しフラグをリセット
+        self.text_edit.heading_applied = False
+        
+        # ステータスバーに通知
+        self.status_bar.showMessage("通常のテキストスタイルを適用しました", 2000)
+    
+    def apply_heading(self, level):
+        """
+        選択したテキストに見出しスタイルを適用する
+        
+        Args:
+            level (int): 見出しレベル（1=H1, 2=H2, 3=H3）
+        """
+        cursor = self.text_edit.textCursor()
+        
+        if not cursor.hasSelection():
+            return
+        
+        # 文字書式を作成
+        char_format = QTextCharFormat()
+        
+        # 見出しレベルに基づいてフォントサイズを設定
+        if level == 1:
+            char_format.setFontPointSize(24)
+            char_format.setFontWeight(QFont.Bold)
+        elif level == 2:
+            char_format.setFontPointSize(18)
+            char_format.setFontWeight(QFont.Bold)
+        elif level == 3:
+            char_format.setFontPointSize(14)
+            char_format.setFontWeight(QFont.Bold)
+        
+        # 選択範囲に見出しスタイルを適用
+        cursor.beginEditBlock()
+        cursor.mergeCharFormat(char_format)
+        cursor.endEditBlock()
+        
+        # カーソル位置を維持しながら選択を解除
+        position = cursor.position()
+        cursor.clearSelection()
+        cursor.setPosition(position)
+        self.text_edit.setTextCursor(cursor)
+        
+        # 見出しフラグを設定
+        self.text_edit.heading_applied = True
+        
+        # ステータスバーに通知
+        self.status_bar.showMessage(f"見出し{level}を適用しました", 2000)
+    
+    def insert_image(self):
+        """
+        画像をテキストエディタに挿入する
+        """
+        options = QFileDialog.Options()
+        file_name, _ = QFileDialog.getOpenFileName(
+            self, "画像を選択", "", 
+            "画像ファイル (*.png *.jpg *.jpeg *.bmp *.gif);;すべてのファイル (*)", 
+            options=options
+        )
+        
+        if file_name:
+            cursor = self.text_edit.textCursor()
+            
+            # 画像を読み込む
+            image = QImage(file_name)
+            
+            if image.isNull():
+                QMessageBox.warning(self, "画像挿入エラー", "選択された画像を読み込めませんでした。")
+                return
+            
+            # 画像が大きすぎる場合はリサイズする
+            max_width = 600
+            if image.width() > max_width:
+                image = image.scaledToWidth(max_width, Qt.SmoothTransformation)
+            
+            # 画像ファイルを日記アプリの画像フォルダにコピーする
+            from pathlib import Path
+            import shutil
+            
+            # オリジナルファイル名を取得
+            original_filename = os.path.basename(file_name)
+            # 現在の日付とタイムスタンプを加えて一意なファイル名を作成
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            new_filename = f"{timestamp}_{original_filename}"
+            new_filepath = os.path.join(self.images_folder, new_filename)
+            
+            # 画像を新しい場所にコピー
+            try:
+                # 画像が大きい場合は新しいサイズで保存
+                if image.width() > max_width:
+                    image.save(new_filepath)
+                else:
+                    shutil.copy2(file_name, new_filepath)
+                
+                # 画像フォーマットを作成（相対パスを使用）
+                image_format = QTextImageFormat()
+                image_format.setName(new_filepath)  # 保存済み画像へのパスを設定
+                image_format.setWidth(image.width())
+                image_format.setHeight(image.height())
+                
+                # 画像を挿入
+                cursor.insertImage(image_format)
+                
+                # ステータスバーに通知
+                self.status_bar.showMessage("画像を挿入しました", 2000)
+            except Exception as e:
+                QMessageBox.warning(self, "画像挿入エラー", f"画像の保存中にエラーが発生しました: {str(e)}")
     
     def change_theme(self, theme):
         self.metadata["theme"] = theme
