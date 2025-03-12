@@ -586,7 +586,7 @@ class DiaryApp(QMainWindow):
                 layout.addLayout(button_layout)
                 
                 # イベント接続
-                open_button.clicked.connect(lambda: self.load_entry(diary_list.currentItem().data(Qt.UserRole)) if diary_list.currentItem() else dialog.reject())
+                open_button.clicked.connect(lambda: self.load_entry_and_close_dialog(diary_list.currentItem().data(Qt.UserRole), dialog) if diary_list.currentItem() else dialog.reject())
                 new_button.clicked.connect(lambda: self.new_entry_with_date(date, dialog))
                 cancel_button.clicked.connect(dialog.reject)
                 
@@ -599,6 +599,19 @@ class DiaryApp(QMainWindow):
             self.tag_edit.clear()
             self.mood_combo.setCurrentIndex(0)
             self.statusBar().showMessage(f"{date.toString('yyyy年MM月dd日')}の日記はありません。新規作成できます。", 3000)
+    
+    def load_entry_and_close_dialog(self, file_path, dialog):
+        """
+        日記を読み込んでダイアログを閉じる
+        
+        Args:
+            file_path (str): 日記ファイルのパス
+            dialog (QDialog): 閉じるダイアログ
+        """
+        success = self.load_entry(file_path)
+        if success:
+            dialog.accept()  # 読み込み成功時のみダイアログを閉じる
+        # 読み込み失敗時はダイアログを開いたままにして、ユーザーが別の選択ができるようにする
     
     def load_entry(self, file_path=None):
         """
