@@ -111,20 +111,30 @@ class CustomTextEdit(QTextEdit):
         キー入力イベントをオーバーライドして、Enterキーが押されたときに通常のテキストスタイルに戻す
         """
         if event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
+            # 現在のカーソル位置を保存
             cursor = self.textCursor()
+            current_position = cursor.position()
+            current_block = cursor.block()
             
             # 親クラスのイベント処理を呼び出し（改行を実行）
             super().keyPressEvent(event)
             
             # 改行後に通常のテキストスタイルを適用
             if self.heading_applied:
+                # 新しい行に移動するためのカーソルを取得
                 cursor = self.textCursor()
+                
+                # 通常のテキストスタイルを設定
                 normal_format = QTextCharFormat()
                 normal_format.setFontPointSize(11)  # 通常のフォントサイズに戻す
                 normal_format.setFontWeight(QFont.Normal)  # 通常の太さに戻す
                 cursor.setCharFormat(normal_format)
-                self.heading_applied = False  # フラグをリセット
-                self.setTextCursor(cursor)  # カーソル位置を更新
+                
+                # 見出しフラグをリセット（次のEnterキーでは通常のテキストとして扱う）
+                self.heading_applied = False
+                
+                # カーソル位置を更新
+                self.setTextCursor(cursor)
         else:
             # その他のキーイベントは通常通り処理
             super().keyPressEvent(event)
@@ -1792,43 +1802,55 @@ class DiaryApp(QMainWindow):
     
     def apply_normal_text(self):
         """
-        選択したテキストを通常のテキストスタイルに戻す
-        選択がない場合は現在の行全体を選択
+        カーソルがある行またはテキスト選択範囲を通常のテキストスタイルに戻す
         """
         cursor = self.text_edit.textCursor()
         
-        # 選択がない場合は現在の行を選択
+        # 選択がない場合は現在の行全体を選択
         if not cursor.hasSelection():
             cursor.movePosition(QTextCursor.StartOfBlock)
             cursor.movePosition(QTextCursor.EndOfBlock, QTextCursor.KeepAnchor)
             self.text_edit.setTextCursor(cursor)
         
+        # テキストフォーマットを作成
         format = QTextCharFormat()
         format.setFontPointSize(11)  # 通常サイズ
         format.setFontWeight(QFont.Normal)  # 通常の太さ
         
+        # 選択範囲に通常テキストスタイルを適用
         cursor.mergeCharFormat(format)
+        
+        # カーソル位置の確保
+        cursorPosition = cursor.position()
+        
+        # 変更を適用してからカーソルを元の位置に戻す
         self.text_edit.document().clearUndoRedoStacks()
-        self.heading_applied = False
+        self.text_edit.setTextCursor(cursor)
+        
+        # 見出し適用フラグをリセット
+        self.text_edit.heading_applied = False
         
         self.statusBar().showMessage("通常テキストを適用しました", 2000)
     
     def apply_heading(self, level):
         """
-        選択したテキストに見出しスタイルを適用する
-        選択がない場合は現在の行全体を選択
+        カーソルがある行またはテキスト選択範囲に見出しスタイルを適用する
         
         Args:
             level (int): 見出しレベル（1, 2, 3）
         """
         cursor = self.text_edit.textCursor()
         
-        # 選択がない場合は現在の行を選択
+        # 選択がない場合は現在の行全体を選択
         if not cursor.hasSelection():
             cursor.movePosition(QTextCursor.StartOfBlock)
             cursor.movePosition(QTextCursor.EndOfBlock, QTextCursor.KeepAnchor)
             self.text_edit.setTextCursor(cursor)
         
+        # ブロックフォーマットを取得して設定
+        blockFormat = cursor.blockFormat()
+        
+        # テキストフォーマットを作成
         format = QTextCharFormat()
         
         # 見出しレベルに応じてフォントサイズと太さを設定
@@ -1841,9 +1863,18 @@ class DiaryApp(QMainWindow):
         
         format.setFontWeight(QFont.Bold)  # 太字
         
+        # 選択範囲に見出しスタイルを適用
         cursor.mergeCharFormat(format)
+        
+        # カーソル位置の確保
+        cursorPosition = cursor.position()
+        
+        # 変更を適用してからカーソルを元の位置に戻す
         self.text_edit.document().clearUndoRedoStacks()
-        self.heading_applied = True
+        self.text_edit.setTextCursor(cursor)
+        
+        # 見出し適用フラグをセット（次の改行時に通常テキストに戻すため）
+        self.text_edit.heading_applied = True
         
         self.statusBar().showMessage(f"見出し {level} を適用しました", 2000)
     
